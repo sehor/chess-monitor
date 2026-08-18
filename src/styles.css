@@ -1,0 +1,55 @@
+:root {
+  font-family: "Microsoft YaHei", system-ui, sans-serif;
+  color: #1e2a24;
+  background: #edf0e8;
+}
+
+body { margin: 0; }
+button { font: inherit; }
+
+.capture-page {
+  box-sizing: border-box;
+  display: grid;
+  min-height: 100vh;
+  grid-template-rows: auto 1fr;
+  gap: 2rem;
+  padding: 2rem;
+}
+
+.page-header { max-width: 48rem; }
+.eyebrow { margin: 0 0 0.5rem; color: #8a541f; font-size: 0.875rem; font-weight: 700; letter-spacing: 0.04em; }
+h1, h2, p { margin-top: 0; }
+h1 { margin-bottom: 0.5rem; font-size: clamp(1.75rem, 4vw, 2.5rem); }
+h2 { margin-bottom: 0; font-size: 1rem; }
+.intro, .preview-hint, .status-message { color: #56645b; line-height: 1.6; }
+
+.capture-layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) minmax(20rem, 1.35fr);
+  gap: 1.5rem;
+  min-height: 0;
+}
+
+.source-panel, .preview-panel { border: 1px solid #c9d0c5; border-radius: 0.5rem; background: #fbfcf8; padding: 1.25rem; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.secondary-action, .primary-action, .source-option { cursor: pointer; }
+.secondary-action, .primary-action { border-radius: 0.25rem; padding: 0.5rem 0.75rem; font-weight: 700; }
+.secondary-action { border: 1px solid #9ca79e; background: transparent; color: #34463a; }
+.primary-action { border: 1px solid #315438; background: #315438; color: #fff; }
+button:focus-visible { outline: 3px solid #d18a35; outline-offset: 2px; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+.source-list { display: grid; max-height: 28rem; gap: 0.75rem; margin: 0; overflow: auto; padding: 0; list-style: none; }
+.source-option { display: grid; width: 100%; grid-template-columns: 6rem 1fr; align-items: center; gap: 0.75rem; border: 1px solid #d7ddd4; border-radius: 0.25rem; background: #fff; padding: 0.5rem; color: inherit; text-align: left; }
+.source-option:hover, .source-option.selected { border-color: #315438; background: #f1f6ed; }
+.source-thumbnail { width: 6rem; height: 3.375rem; object-fit: cover; }
+.source-name { overflow-wrap: anywhere; }
+.capture-state { color: #56645b; font-size: 0.875rem; }
+.preview { display: block; width: 100%; min-height: 15rem; background: #172019; object-fit: contain; }
+.preview-hint { min-height: 2.5rem; margin: 0.75rem 0 1rem; }
+.error-message { border-left: 0.25rem solid #b42318; background: #fdf0ef; padding: 0.75rem; color: #8a1c13; }
+
+@media (max-width: 48rem) {
+  .capture-page { padding: 1rem; }
+  .capture-layout { grid-template-columns: 1fr; }
+}

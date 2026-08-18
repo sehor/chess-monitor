@@ -1,0 +1,75 @@
+# Frontend dependencies (pnpm)
+node_modules/
+.pnpm-store/
+
+# Build and packaging output
+dist/
+dist-electron/
+build/
+out/
+release/
+*.asar
+*.appx
+*.msix
+*.exe
+*.nsis.7z
+
+# TypeScript and tooling caches
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.vite/
+.cache/
+coverage/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+*.local
+
+# Runtime data and logs
+*.log
+logs/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Backend Python/uv development artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local ML models, datasets, and engine binaries
+models/
+checkpoints/
+datasets/
+engines/
+
+# IDE and OS files
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files and local captures
+tmp/
+temp/
+screenshots/
+*.tmp
+*.bak

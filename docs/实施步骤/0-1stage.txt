@@ -1,0 +1,171 @@
+# 阶段 0 技术验证 + 阶段 1 本地分析底座实施计划
+
+## Summary
+
+- 当前“开发环境基线”已完成：Electron/Vue/Vitest 骨架存在，`contextIsolation` 已启用，`pnpm smoke` 实测通过。
+- 本轮实施覆盖：
+  1. 真实 Windows 客户端抓屏、两点校准、90 交叉点变化检测与数据采集。
+  2. FEN、规则、可交互棋盘和 Pikafish 本地分析。
+- 阶段 0 与阶段 1 可在共享协议完成后并行推进；阶段 3 必须等两者全部验收通过。
+- 不包含 SQLite、Profile 正式持久化、走子跟踪、ONNX、WGC/DXGI、打包发布或多客户端。
+- 项目采用 `GPL-3.0-or-later`。可使用 GPL 的 `xiangqiground`；同时保留其与 Pikafish 的许可证、源码获取方式和第三方声明。[xiangqiground 许可说明](https://github.com/lucaferranti/xiangqiground)、[Pikafish 项目及 GPL 信息](https://github.com/official-pikafish/Pikafish)。
+
+## Locked Decisions and Interfaces
+
+### Dependencies
+
+- `xiangqiground@0.1.0` 精确锁定。
+- 规则库按原生行为验收。因为 npm 发布状态与上游仓库元数据不一致，直接锁定 `west-shell/xiangqi.js` 提交 `b15b0459a255844006ad9ba4a24528d6e900eac7`，通过适配器隔离，不让业务代码依赖其内部对象。[上游 API 与 BSD-2-Clause 许可](https://github.com/west-shell/xiangqi.js)。
+- Pikafish 固定官方 `2026-01-02` 发布版；本地通过 `PIKAFISH_PATH` 指向兼容测试机 CPU 的 Windows 二进制，记录文件名、版本、CPU 指令集和 SHA-256，不提交二进制。[官方发布页](https://github.com/official-pikafish/Pikafish/releases)。
+
+### Domain contracts
+
+- `Side = 'red' | 'black'`；`Orientation = 'red-bottom' | 'black-bottom'`。
+- 内部走法统一为小写四字符 ICCS/LAN 坐标，例如 `h2e2`。
+- `PositionSnapshot` 固定包含 `positionVersion`、FEN、行棋方、方向、最后着法和着法历史。
+- `NormalizedScore` 使用红方视角：
+  - `cp > 0` 表示红优。
+  - `cp < 0` 表示黑优。
+  - 将死分单独使用带符号的 `mateIn`，不伪装成超大厘兵值。
+- 所有 IPC 统一返回：
+  - `{ ok: true, value }`
+  - `{ ok: false, error: { code, message, retryable } }`
+- 预定义错误码包括 `INVALID_INPUT`、`SOURCE_GONE`、`CAPTURE_DENIED`、`FRAME_TOO_LARGE`、`ENGINE_NOT_CONFIGURED`、`ENGINE_START_FAILED`、`ENGINE_PROTOCOL_ERROR`、`ENGINE_TIMEOUT`。
+
+### Preload API
+
+仅暴露以下能力，不暴露 `ipcRenderer`、文件路径写入、子进程或 Electron 原始对象：
+
+- `capture.listSources()`：返回窗口 ID、名称和受限缩略图。
+- `capture.selectSource(sourceId)` / `capture.clearSource()`：设置唯一允许捕获的窗口。
+- `capture.analyzeFrame(frame)`：接收有大小上限的棋盘裁剪帧，返回稳定性和 90 点分数。
+- `capture.saveSample(sample)`：保存到应用数据目录，不接受 Renderer 任意输出路径。
+- `analysis.start({ fen, positionVersion, multiPv })`。
+- `analysis.stop()`、`analysis.retry()`、`analysis.onEvent(listener)`。
+- `analysis.onEvent` 返回取消订阅函数；事件必须携带 `analysisId` 和 `positionVersion`。
+
+Electron 使用 `desktopCapturer` 枚举来源、`setDisplayMediaRequestHandler` 只授权用户刚选中的窗口，并由 Renderer 调用 `getDisplayMedia`。[Electron 抓屏接口](https://www.electronjs.org/docs/latest/api/desktop-capturer/)。继续保持 `contextIsolation: true`、`nodeIntegration: false`，显式启用 sandbox、限制导航和新窗口、设置仅本地资源 CSP。[Electron 安全建议](https://www.electronjs.org/docs/latest/tutorial/security)。
+
+## Implementation Tasks
+
+### 0. 开工输入门
+
+- 测试者提供目标客户端名称、版本、主题、窗口模式、动画设置、测试账号/私有测试场景和测试机配置。
+- 准备 100%、125%、150% DPI 环境。
+- 准备 Pikafish 官方二进制并设置 `PIKAFISH_PATH`。
+- 真实客户端资料未齐时，阶段 1 的纯代码工作可继续，阶段 0 现场验收不得宣称完成。
+
+### 1. 共享协议、安全边界与许可证
+
+- 先定义领域类型、IPC 输入输出、错误码、捕获样本格式和引擎事件联合类型。
+- FEN 限制为合理长度的 ASCII 文本；帧限制为最大 2048×2048、16 MiB，捕获处理保持最多一个请求在途。
+- 启用 Electron sandbox、CSP、导航阻止和窄 preload API。
+- 增加 GPL 主许可证、第三方依赖清单和源码获取说明。
+- 验证：协议类型测试、恶意 IPC 参数测试、`pnpm typecheck`。
+
+### 2. 窗口选择与抓屏链路
+
+- 实现窗口枚举、缩略图选择、单一来源授权、预览启动/停止和来源消失处理。
+- Renderer 只传压缩后的棋盘裁剪帧；采样上限 10 FPS，主进程忙时丢弃新帧，禁止形成无界队列。
+- 不注入客户端输入、不读取进程内存、不绕过防护机制。
+- 验证：来源切换、拒绝权限、窗口关闭、重复启动/停止和资源释放。
+
+### 3. 两点校准与 90 点网格
+
+- 两个点击点固定解释为图像中的左上、右下棋盘交叉点；方向另选，不混入像素坐标。
+- 使用浮点间距生成 9×10 交叉点，实际裁剪时才取整。
+- ROI 默认边长为相邻线距较小值的 60%，校准界面允许在 40%–80% 内调整。
+- 显示网格、ROI、边界溢出、方向和坐标预览。
+- 验证：不同尺寸、三个 DPI、红黑方向和非法校准输入的单元测试。
+
+### 4. 稳定帧、ROI 变化评分与数据格式
+
+- 每个 ROI 经 `sharp` 转为 32×32 灰度图；用均值偏移补偿后的像素平均绝对差作为 `0..1` 分数。
+- 每 100 ms 采样；90 点中位变化低于稳定阈值并连续三帧满足条件时判定稳定。
+- 双阈值计算：
+  - 低阈值取训练集静止分数的 P99.5。
+  - 高阈值取不低于低阈值、同时保持训练集变化点召回率至少 99% 的最小可行值。
+  - 中间区间等待下一稳定帧，不确认变化。
+- 数据集按对局和 DPI 分组做 70/30 训练/留出划分，避免相邻帧同时进入两侧。
+- 每个样本保存前后 PNG、Profile、客户端/DPI/时间戳、90 点 CSV、人工起终点标注和失败原因。
+
+### 5. 阶段 0 采集工具与质量门
+
+- UI 提供“开始事件—走子—稳定—标注起终点/吃子/高亮/动画—保存”流程。
+- 累计不少于 300 个事件，每个 DPI 不少于 80 个。
+- 自动生成 JSON/Markdown 指标报告和失败样本索引。
+- 正式留出集要求：抓帧成功率 ≥99%、网格误差 ≤线距 10%、变化点召回率 ≥99%、静止误报帧比例 ≤0.5%。
+- 任一核心指标失败时停止阶段 0；先调整 ROI/稳定帧。只有证据表明 `desktopCapturer` 不可用时，才另行批准 WGC 实验。
+
+### 6. 规则依赖资格验证与领域适配器
+
+- 锁定依赖后先做 Node、Vite、Electron 三环境导入验证；失败则停在资格门，不把上游源码散落复制进项目。
+- `RulesAdapter` 提供加载 FEN、导出 FEN、合法着法、执行、撤销、重置、状态和历史。
+- 规则行为完全服从锁定提交，不额外实现中国竞赛规则覆盖。
+- 建立至少 100 个表格化规则用例：将帅/九宫、士、象、马、车、炮、兵、将军与应将、将死/困毙、重复/和棋和记谱。
+
+### 7. 棋盘组件适配器
+
+- Vue 组件只通过 `BoardAdapter` 操作 xiangqiground。
+- 集中转换 `white = red`、红黑方向、内部 ICCS 和 UI 坐标。
+- 支持点击/拖动合法走子、撤销、重置、方向翻转、最后着和最佳着箭头；不做摆子编辑器。
+- 建立 50 个 FEN 棋子映射基准，覆盖普通、吃子、将军、将死、和棋和双方向显示。
+
+### 8. Pikafish 协议解析与进程封装
+
+- 使用 `spawn(executable, args, { shell: false, windowsHide: true })`；Renderer 无权指定路径或参数。
+- 启动时校验文件存在和 SHA-256，工作目录设为引擎目录。
+- 独立解析 `uci`、`readyok`、`info`、`score cp/mate`、`multipv`、`nodes`、`pv` 和 `bestmove`。
+- 输出行长度上限 64 KiB；启动超时 10 秒、ready/stop 屏障超时 2 秒。
+- 使用伪引擎进程覆盖乱序、截断输出、非法分值、无响应和异常退出。
+
+### 9. Engine Manager 与最新局面一致性
+
+- 默认 `MultiPV=3`，UI 可选 1–5；使用 `go infinite`，直到用户停止或局面改变。
+- 新局面处理顺序：递增 `positionVersion` 和 `analysisId` → 立即使旧任务失效并清除 UI 箭头 → `stop` → ready 屏障 → 新 `position` → `go infinite`。
+- 主进程丢弃旧 `analysisId`；Renderer 再以 `positionVersion` 做第二层过滤。
+- 崩溃后按 250 ms、1 s、2 s 最多重启三次，只恢复最新局面；60 秒内三次失败后进入 `FAILED`，等待用户重试。
+- 评估统一转为红方视角；节点数按十进制字符串传输，避免大整数精度损失。
+
+### 10. 阶段 1 UI 纵向闭环
+
+- 单屏布局包括 FEN 输入、应用按钮、棋盘、红黑方向、当前行棋方、撤销/重置、引擎状态、评估、Top N、PV、深度、节点数和最佳着。
+- FEN 无效时保留旧局面并显示结构化错误。
+- 合法走子、撤销、重置或新 FEN 都走同一个 `PositionSnapshot → Engine Manager` 通道。
+- `STARTING`、`ANALYZING`、`STOPPED`、`RESTARTING`、`FAILED` 使用不同状态提示。
+- 阶段 1 不引入 SQLite；关闭应用后不恢复会话。
+
+### 11. 集成验收与文档回填
+
+- 运行 100 次快速 FEN 切换，旧结果和旧箭头出现次数必须为 0。
+- 运行 100 次 `stop → position → go`，每次都收到新局面的首条有效信息且无死锁。
+- 强制结束 Pikafish，验证错误展示、三次重启策略和 Renderer 不崩溃。
+- 用已知红方/黑方行棋局面验证厘兵与将死符号。
+- 断网后重新启动应用，确认 FEN、走子和引擎分析仍可使用。
+- 更新阶段文档中的实际依赖、规则库提交、Pikafish 资源、测试设备、数据集版本和最终指标。
+
+## Test Plan and Definition of Done
+
+- 每个任务控制在 3–5 个相关文件内，并同时提交对应测试。
+- 固定验证命令：
+  - `pnpm typecheck`
+  - `pnpm test --run`
+  - `pnpm build`
+  - `pnpm smoke`
+  - `pnpm audit --audit-level=high`
+- 阶段 0 以留出数据集的量化报告为退出条件。
+- 阶段 1 以 50 个 FEN 映射、100 个规则用例、100 次局面切换、引擎崩溃恢复和离线运行全部通过为退出条件。
+- 不通过时不得降低原定阈值；若确需修改，先记录设备、数据集、原因和新阈值，再重新执行完整留出集验收。
+
+## Assumptions and External Evidence
+
+- 目标客户端具体资料作为开工输入门，由测试者提供；实施者不自行挑选替代客户端。
+- 测试使用私有或获准场景，不自动操作客户端，也不读取客户端进程内部数据。
+- 阶段 1 默认 MultiPV 3、持续分析、规则库原生裁决、无持久化。
+- 当前工作区文件大多尚未纳入 Git；实施前应先建立明确的环境基线，避免后续无法区分原始文件与阶段改动。
+
+搜索摘要：
+
+- npm Registry｜`xiangqiground`、`@west-shell/xiangqi.js`｜2 次。
+- GitHub｜规则库、棋盘组件、Pikafish 发布与许可｜3 个查询，后续只读核验官方页面。
+- Electron 官方文档｜`desktopCapturer`、IPC/context isolation 安全边界｜2 个查询。
