@@ -14,9 +14,9 @@
 
 ## 当前实施状态
 
-- [阶段 0 实施状态](./phase-00-implementation-status.md)：记录当前已交付的抓屏安全边界、窗口预览、校准基础与验证结果。
-- 阶段 0 的目标客户端量化验收尚未开始；必须由测试者提供客户端版本、主题、窗口尺寸与留出样本后执行。
-- 阶段 1 已锁定棋盘和规则库依赖，但尚未实现合法走子和 Pikafish 联动。
+- [阶段 0–1 实施状态](./phase-00-implementation-status.md)：记录抓屏、校准、采集报告、规则/棋盘适配、Engine Manager、自动化资格门和仍需现场完成的证据。
+- 阶段 0 的开发与目标客户端量化验收已完成；项目方确认范围为 100%/125% DPI、共 200 个事件，报告见 `../artifacts/field-validation/capture-quality.md`。
+- 阶段 1 的代码与伪引擎自动化验收已完成；真实官方 Pikafish 二进制的握手、100 次切换、强制结束恢复和离线运行仍待目标设备复核。
 
 ## 2. 总体技术路线
 
@@ -47,7 +47,7 @@
 | 棋盘组件 | xiangqiground | 业务域统一使用 `red`/`black`，隔离组件内部 `white = red` 的命名 |
 | 规则库 | `@west-shell/xiangqi.js`，锁定版本或 commit | 内部着法统一使用 ICCS 坐标格式，如 `h2e2`；正式开工前补齐规则兼容性测试 |
 | 引擎 | Pikafish + 独立 Engine Manager | 进程、协议、超时、过期结果和崩溃恢复不得散落在 UI 中 |
-| 图像处理 | `sharp` + TypedArray 像素差；必要时再加 SSIM | 所有棋盘采样均为 9×10 共 90 个交叉点 ROI，不称“90 格” |
+| 图像处理 | Electron 捕获帧 + TypedArray 像素差；必要时再加 SSIM | 所有棋盘采样均为 9×10 共 90 个交叉点 ROI，不称“90 格” |
 | 完整识别 | `xiangqi-bot` 作为初始代码基础 + ONNX Runtime | 优先移植 ONNX 分类、校准、双帧和置信度逻辑；替换 macOS 平台代码；模型须针对目标客户端实测 |
 | 训练 | Python + PyTorch，仅开发环境 | PyTorch、CUDA 和 Python 开发环境不进入最终用户安装包 |
 | 数据 | SQLite | 保存设置、Profile、棋局、分析摘要、资源版本和迁移版本 |

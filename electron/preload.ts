@@ -1,13 +1,67 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { CaptureApi } from '../src/shared/ipc'
+import type {
+  AnalysisApi,
+  AnalysisEvent,
+  AnalysisStartInput,
+  CaptureApi,
+  CaptureFrameInput,
+  CaptureSampleInput,
+  ProfileApi,
+  TrackerApi,
+  TrackerStartInput,
+} from '../src/shared/ipc'
+import type { CaptureProfileInput } from '../src/shared/profile'
+import type { BoardTrackerEvent } from '../src/domain/board-tracker'
 
 const capture: CaptureApi = Object.freeze({
   listSources: () => ipcRenderer.invoke('capture:list-sources'),
   selectSource: (sourceId: string) => ipcRenderer.invoke('capture:select-source', sourceId),
   clearSource: () => ipcRenderer.invoke('capture:clear-source'),
+  analyzeFrame: (frame: CaptureFrameInput) => ipcRenderer.invoke('capture:analyze-frame', frame),
+  saveSample: (sample: CaptureSampleInput) => ipcRenderer.invoke('capture:save-sample', sample),
+})
+
+const analysis: AnalysisApi = Object.freeze({
+  start: (input: AnalysisStartInput) => ipcRenderer.invoke('analysis:start', input),
+  stop: () => ipcRenderer.invoke('analysis:stop'),
+  retry: () => ipcRenderer.invoke('analysis:retry'),
+  selectEngine: () => ipcRenderer.invoke('analysis:select-engine'),
+  getEngine: () => ipcRenderer.invoke('analysis:get-engine'),
+  onEvent: (listener: (event: AnalysisEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: AnalysisEvent) => listener(event)
+    ipcRenderer.on('analysis:event', handler)
+    return () => ipcRenderer.removeListener('analysis:event', handler)
+  },
+})
+
+const profiles: ProfileApi = Object.freeze({
+  list: () => ipcRenderer.invoke('profile:list'),
+  save: (input: CaptureProfileInput) => ipcRenderer.invoke('profile:save', input),
+  delete: (id: string) => ipcRenderer.invoke('profile:delete', id),
+  setActive: (id: string | null) => ipcRenderer.invoke('profile:set-active', id),
+  getActive: () => ipcRenderer.invoke('profile:get-active'),
+  exportDiagnostics: (id: string) => ipcRenderer.invoke('profile:export-diagnostics', id),
+})
+
+const tracker: TrackerApi = Object.freeze({
+  start: (input: TrackerStartInput) => ipcRenderer.invoke('tracker:start', input),
+  stop: () => ipcRenderer.invoke('tracker:stop'),
+  resync: (fen: string) => ipcRenderer.invoke('tracker:resync', fen),
+  confirmCandidate: (move: string) => ipcRenderer.invoke('tracker:confirm-candidate', move),
+  undo: () => ipcRenderer.invoke('tracker:undo'),
+  getState: () => ipcRenderer.invoke('tracker:get-state'),
+  exportDiagnostics: () => ipcRenderer.invoke('tracker:export-diagnostics'),
+  onEvent: (listener: (event: BoardTrackerEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: BoardTrackerEvent) => listener(event)
+    ipcRenderer.on('tracker:event', handler)
+    return () => ipcRenderer.removeListener('tracker:event', handler)
+  },
 })
 
 contextBridge.exposeInMainWorld('chessMonitor', {
   platform: process.platform,
   capture,
+  analysis,
+  profiles,
+  tracker,
 })

@@ -1,0 +1,12 @@
+﻿{
+    "startedAt":  "2026-08-18T07:24:38.2056315Z",
+    "enginePath":  "E:\\projects\\chess-monitor\\engines\\Pikafish.2026-01-02\\Windows\\pikafish-bmi2.exe",
+    "firewallRule":  "ChessMonitor-Pikafish-Offline-Field-Validation",
+    "firewallRuleCreated":  true,
+    "testExitCode":  0,
+    "testOutput":  "\u003e chess-monitor@0.1.0 test E:\\projects\\chess-monitor\r\n\u003e vitest \"--run\" \"electron/engine-manager.integration.test.ts\"\r\n\r\n\r\n\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.10 \u001b[39m\u001b[90mE:/projects/chess-monitor\u001b[39m\r\n\r\n \u001b[32m鉁?[39m electron/engine-manager.integration.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 5640\u001b[2mms\u001b[22m\u001b[39m\r\n     \u001b[33m\u001b[2m鉁?[22m\u001b[39m completes 100 ready-barrier switches with a valid first info event \u001b[33m 990\u001b[2mms\u001b[22m\u001b[39m\r\n     \u001b[33m\u001b[2m鉁?[22m\u001b[39m recovers from a real process kill and reaches FAILED after three killed restart attempts \u001b[33m 4648\u001b[2mms\u001b[22m\u001b[39m\r\n\r\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m\r\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m2 passed\u001b[39m\u001b[22m\u001b[90m (2)\u001b[39m\r\n\u001b[2m   Start at \u001b[22m 15:24:43\r\n\u001b[2m   Duration \u001b[22m 6.00s\u001b[2m (transform 74ms, setup 0ms, import 104ms, tests 5.64s, environment 0ms)\u001b[22m",
+    "passed":  true,
+    "firewallRuleRemoved":  true,
+    "error":  null,
+    "completedAt":  "2026-08-18T07:24:50.7714235Z"
+}

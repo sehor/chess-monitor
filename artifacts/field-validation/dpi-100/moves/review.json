@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-18T07:04:00.000Z",
+  "reviewMethod": "visual inspection of consecutive stable-state PNGs",
+  "pointNumbering": "one-based row-major, top-left to bottom-right",
+  "accepted": [
+    { "stateIndex": 1, "eventType": "highlight", "expectedChangedPoints": [89, 87, 78, 80, 2] },
+    { "stateIndex": 2, "eventType": "animation", "expectedChangedPoints": [89, 87, 78, 80] },
+    { "stateIndex": 3, "eventType": "animation", "expectedChangedPoints": [89, 87, 78, 80] },
+    { "stateIndex": 4, "eventType": "move", "expectedChangedPoints": [80, 38, 17, 39, 78] },
+    { "stateIndex": 5, "eventType": "highlight", "expectedChangedPoints": [89, 87, 17, 78, 38] },
+    { "stateIndex": 6, "eventType": "animation", "expectedChangedPoints": [89, 87, 78, 80] },
+    { "stateIndex": 7, "eventType": "animation", "expectedChangedPoints": [89, 87, 78, 80] },
+    { "stateIndex": 8, "eventType": "animation", "expectedChangedPoints": [89, 87, 78, 80] },
+    { "stateIndex": 9, "eventType": "move", "expectedChangedPoints": [85, 82, 78] },
+    { "stateIndex": 10, "eventType": "move", "expectedChangedPoints": [68, 52, 48] },
+    { "stateIndex": 11, "eventType": "move", "expectedChangedPoints": [88, 39, 80, 68, 30, 77, 85, 52, 48] },
+    { "stateIndex": 12, "eventType": "highlight", "expectedChangedPoints": [82, 88, 30, 39, 36, 33, 31, 48, 28, 29, 21, 32, 35] },
+    { "stateIndex": 13, "eventType": "move", "expectedChangedPoints": [86, 88, 87, 77, 78, 30, 36, 33, 82, 39, 31, 48, 28, 29, 21, 32, 35] },
+    { "stateIndex": 14, "eventType": "highlight", "expectedChangedPoints": [18, 27, 9, 16, 10, 36, 45, 15] },
+    { "stateIndex": 15, "eventType": "move", "expectedChangedPoints": [18, 33, 42, 27, 51, 31, 28, 9, 24, 16, 60, 29, 10, 45, 32, 35] },
+    { "stateIndex": 16, "eventType": "highlight", "expectedChangedPoints": [86, 59, 33, 16, 88, 14, 42, 7, 25, 51, 31, 43, 52, 28, 24, 60, 29, 10, 36, 32, 35] }
+  ],
+  "rejected": [
+    { "stateIndex": 17, "reason": "failure dialog obscures the board" }
+  ]
+}

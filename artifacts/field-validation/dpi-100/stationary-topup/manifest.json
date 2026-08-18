@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "labelSource": "operator-confirmed-stationary",
+  "eventType": "stationary",
+  "dpi": 100,
+  "intervalMs": 200,
+  "boardRect": {
+    "x": 865,
+    "y": 148,
+    "width": 532,
+    "height": 600
+  },
+  "intersections": {
+    "topLeft": {
+      "x": 11,
+      "y": 10
+    },
+    "bottomRight": {
+      "x": 526,
+      "y": 591
+    }
+  },
+  "display": {
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 1080
+    },
+    "scaleFactor": 1
+  },
+  "startedAt": "2026-08-18T06:59:10.138Z",
+  "samples": [
+    {
+      "sampleId": "dpi-100-stationary-001",
+      "fileName": "stationary-001.png",
+      "capturedAt": "2026-08-18T06:59:10.666Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-100-stationary-002",
+      "fileName": "stationary-002.png",
+      "capturedAt": "2026-08-18T06:59:11.341Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-100-stationary-003",
+      "fileName": "stationary-003.png",
+      "capturedAt": "2026-08-18T06:59:12.031Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-100-stationary-004",
+      "fileName": "stationary-004.png",
+      "capturedAt": "2026-08-18T06:59:12.711Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    }
+  ],
+  "completedAt": "2026-08-18T06:59:12.803Z"
+}

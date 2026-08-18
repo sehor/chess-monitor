@@ -1,0 +1,22 @@
+{
+  "capturedAt": "2026-08-18T07:16:11.654Z",
+  "fileName": "window-2026-08-18T07-16-11.654Z.png",
+  "sourceId": "screen:0:0",
+  "sourceName": "整个屏幕",
+  "thumbnailSize": {
+    "width": 1600,
+    "height": 900
+  },
+  "displays": [
+    {
+      "id": "1490587997",
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1536,
+        "height": 864
+      },
+      "scaleFactor": 1.25
+    }
+  ]
+}

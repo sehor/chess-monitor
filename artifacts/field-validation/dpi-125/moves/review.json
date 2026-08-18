@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-18T07:15:00.000Z",
+  "reviewMethod": "visual inspection of consecutive stable-state PNGs",
+  "pointNumbering": "one-based row-major, top-left to bottom-right",
+  "accepted": [
+    { "stateIndex": 1, "eventType": "move", "expectedChangedPoints": [7, 27, 40, 4, 5, 49, 13, 41, 42, 39, 38, 43, 44, 37] },
+    { "stateIndex": 2, "eventType": "move", "expectedChangedPoints": [27, 43, 4, 6, 7, 13, 15, 40, 42, 49, 31, 51, 58, 33, 22, 60] },
+    { "stateIndex": 3, "eventType": "move", "expectedChangedPoints": [27, 43, 42, 6, 15, 51, 33, 60] },
+    { "stateIndex": 4, "eventType": "highlight", "expectedChangedPoints": [42, 43, 51, 41, 40, 39, 38, 33, 44, 60, 37] },
+    { "stateIndex": 5, "eventType": "move", "expectedChangedPoints": [14, 7, 27, 5, 17, 42, 51, 43, 26, 41, 40, 39, 38, 33, 60, 37, 13] },
+    { "stateIndex": 6, "eventType": "capture", "expectedChangedPoints": [13, 7, 5, 77, 17, 43, 86, 39, 14, 26, 44] },
+    { "stateIndex": 7, "eventType": "animation", "expectedChangedPoints": [14, 13, 30, 7, 45, 68, 6, 84, 44, 24, 77, 87, 58, 40, 67, 43, 39, 49, 41, 42, 31, 38, 22, 37] },
+    { "stateIndex": 8, "eventType": "move", "expectedChangedPoints": [23, 58, 3, 40, 41, 49, 42, 39, 38, 60, 37] },
+    { "stateIndex": 9, "eventType": "move", "expectedChangedPoints": [58, 59, 23, 40, 49, 31, 22, 60, 13] }
+  ],
+  "rejected": []
+}

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { createPositionSnapshot, parseFen } from './position'
 
-const initialFen = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w'
+const initialFen = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1'
 
 describe('parseFen', () => {
   it('validates the 9 by 10 xiangqi board and side to move', () => {
     expect(parseFen(initialFen)).toEqual({
       board: initialFen.split(' ')[0],
+      fen: initialFen,
       sideToMove: 'red',
     })
   })

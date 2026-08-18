@@ -1,0 +1,22 @@
+{
+  "capturedAt": "2026-08-18T06:54:06.362Z",
+  "fileName": "window-2026-08-18T06-54-06.362Z.png",
+  "sourceId": "window:4982168:0",
+  "sourceName": "天天象棋",
+  "thumbnailSize": {
+    "width": 1544,
+    "height": 1200
+  },
+  "displays": [
+    {
+      "id": "1490587997",
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "scaleFactor": 1
+    }
+  ]
+}

@@ -16,7 +16,7 @@
 
 - `xiangqiground@0.1.0` 精确锁定。
 - 规则库按原生行为验收。因为 npm 发布状态与上游仓库元数据不一致，直接锁定 `west-shell/xiangqi.js` 提交 `b15b0459a255844006ad9ba4a24528d6e900eac7`，通过适配器隔离，不让业务代码依赖其内部对象。[上游 API 与 BSD-2-Clause 许可](https://github.com/west-shell/xiangqi.js)。
-- Pikafish 固定官方 `2026-01-02` 发布版；本地通过 `PIKAFISH_PATH` 指向兼容测试机 CPU 的 Windows 二进制，记录文件名、版本、CPU 指令集和 SHA-256，不提交二进制。[官方发布页](https://github.com/official-pikafish/Pikafish/releases)。
+- Pikafish 固定官方 `2026-01-02` 发布版；Windows 二进制下载到本项目的 `engines/`（由 `.gitignore` 排除），用户在界面中选择与其 CPU 兼容的 `.exe`。主进程仅在内存中保存本次选择，并在启动前重新校验 SHA-256；不通过环境变量配置，也不提交二进制。[官方发布页](https://github.com/official-pikafish/Pikafish/releases)。
 
 ### Domain contracts
 
@@ -50,9 +50,9 @@ Electron 使用 `desktopCapturer` 枚举来源、`setDisplayMediaRequestHandler`
 
 ### 0. 开工输入门
 
-- 测试者提供目标客户端名称、版本、主题、窗口模式、动画设置、测试账号/私有测试场景和测试机配置。
+- 目标客户端已锁定为 QQ 游戏大厅中的《天天象棋》；测试者仍需补充客户端版本、窗口模式、动画设置、测试账号/私有测试场景和测试机配置。首张 1200×936 横屏木纹主题截图仅作为首个 Profile 的校准样本，不得将其坐标写死。
 - 准备 100%、125%、150% DPI 环境。
-- 准备 Pikafish 官方二进制并设置 `PIKAFISH_PATH`。
+- 准备 Pikafish 官方二进制，下载到 `engines/`，并通过界面选择兼容的 `.exe`。
 - 真实客户端资料未齐时，阶段 1 的纯代码工作可继续，阶段 0 现场验收不得宣称完成。
 
 ### 1. 共享协议、安全边界与许可证
@@ -80,7 +80,7 @@ Electron 使用 `desktopCapturer` 枚举来源、`setDisplayMediaRequestHandler`
 
 ### 4. 稳定帧、ROI 变化评分与数据格式
 
-- 每个 ROI 经 `sharp` 转为 32×32 灰度图；用均值偏移补偿后的像素平均绝对差作为 `0..1` 分数。
+- 每个 ROI 由捕获帧转换为 32×32 灰度 TypedArray；用均值偏移补偿后的像素平均绝对差作为 `0..1` 分数。
 - 每 100 ms 采样；90 点中位变化低于稳定阈值并连续三帧满足条件时判定稳定。
 - 双阈值计算：
   - 低阈值取训练集静止分数的 P99.5。

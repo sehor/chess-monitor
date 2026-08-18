@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest'
+import { FrameAnalyzer } from './capture-analysis'
+
+function frame(fill = 0): Uint8ClampedArray {
+  return new Uint8ClampedArray(20 * 20 * 4).fill(fill)
+}
+
+describe('FrameAnalyzer', () => {
+  it('requires three consecutive low-change frames before declaring stability', () => {
+    const analyzer = new FrameAnalyzer()
+    const input = {
+      pixels: frame(), width: 20, height: 20,
+      topLeft: { x: 2, y: 2 }, bottomRight: { x: 17, y: 17 },
+    }
+
+    expect(analyzer.analyze(input)).toMatchObject({ isStable: false, stableFrameCount: 1, changedPointCount: 0 })
+    expect(analyzer.analyze(input)).toMatchObject({ isStable: false, stableFrameCount: 2, changedPointCount: 0 })
+    expect(analyzer.analyze(input)).toMatchObject({ isStable: true, stableFrameCount: 3, changedPointCount: 0 })
+  })
+
+  it('detects a material change in a sampled ROI', () => {
+    const analyzer = new FrameAnalyzer()
+    const input = { pixels: frame(), width: 20, height: 20, topLeft: { x: 2, y: 2 }, bottomRight: { x: 17, y: 17 } }
+    analyzer.analyze(input)
+    for (let y = 1; y <= 3; y += 1) {
+      for (let x = 1; x <= 3; x += 1) {
+        if ((x + y) % 2 === 0) input.pixels.fill(255, (y * 20 + x) * 4, (y * 20 + x) * 4 + 3)
+      }
+    }
+
+    const result = analyzer.analyze(input)
+    expect(result.isStable).toBe(false)
+    expect(result.changedPointCount).toBeGreaterThan(0)
+  })
+
+  it('compensates for a uniform brightness shift inside every ROI', () => {
+    const analyzer = new FrameAnalyzer()
+    const input = { pixels: frame(), width: 20, height: 20, topLeft: { x: 2, y: 2 }, bottomRight: { x: 17, y: 17 } }
+    analyzer.analyze(input)
+    input.pixels.fill(80)
+
+    expect(analyzer.analyze(input)).toMatchObject({ changedPointCount: 0, medianScore: 0 })
+  })
+
+  it('rejects frames with an inconsistent RGBA byte length', () => {
+    expect(() => new FrameAnalyzer().analyze({
+      pixels: new Uint8Array(3), width: 20, height: 20,
+      topLeft: { x: 2, y: 2 }, bottomRight: { x: 17, y: 17 },
+    })).toThrow('RGBA')
+  })
+})

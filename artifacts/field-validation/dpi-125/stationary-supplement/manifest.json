@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "labelSource": "operator-confirmed-stationary",
+  "eventType": "stationary",
+  "dpi": 125,
+  "intervalMs": 200,
+  "boardRect": {
+    "x": 765,
+    "y": 133,
+    "width": 584,
+    "height": 646
+  },
+  "intersections": {
+    "topLeft": {
+      "x": 40,
+      "y": 35
+    },
+    "bottomRight": {
+      "x": 545,
+      "y": 603
+    }
+  },
+  "display": {
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 864
+    },
+    "scaleFactor": 1.25
+  },
+  "startedAt": "2026-08-18T07:15:19.266Z",
+  "samples": [
+    {
+      "sampleId": "dpi-125-stationary-001",
+      "fileName": "stationary-001.png",
+      "capturedAt": "2026-08-18T07:15:19.788Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-002",
+      "fileName": "stationary-002.png",
+      "capturedAt": "2026-08-18T07:15:20.464Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-003",
+      "fileName": "stationary-003.png",
+      "capturedAt": "2026-08-18T07:15:21.152Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-004",
+      "fileName": "stationary-004.png",
+      "capturedAt": "2026-08-18T07:15:21.865Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-005",
+      "fileName": "stationary-005.png",
+      "capturedAt": "2026-08-18T07:15:22.533Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-006",
+      "fileName": "stationary-006.png",
+      "capturedAt": "2026-08-18T07:15:23.224Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-007",
+      "fileName": "stationary-007.png",
+      "capturedAt": "2026-08-18T07:15:23.955Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-008",
+      "fileName": "stationary-008.png",
+      "capturedAt": "2026-08-18T07:15:24.615Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-009",
+      "fileName": "stationary-009.png",
+      "capturedAt": "2026-08-18T07:15:25.274Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-010",
+      "fileName": "stationary-010.png",
+      "capturedAt": "2026-08-18T07:15:25.959Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-011",
+      "fileName": "stationary-011.png",
+      "capturedAt": "2026-08-18T07:15:26.635Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-012",
+      "fileName": "stationary-012.png",
+      "capturedAt": "2026-08-18T07:15:27.296Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-013",
+      "fileName": "stationary-013.png",
+      "capturedAt": "2026-08-18T07:15:28.010Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-014",
+      "fileName": "stationary-014.png",
+      "capturedAt": "2026-08-18T07:15:28.678Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    },
+    {
+      "sampleId": "dpi-125-stationary-015",
+      "fileName": "stationary-015.png",
+      "capturedAt": "2026-08-18T07:15:29.396Z",
+      "expectedChangedPoints": [],
+      "captureSucceeded": true
+    }
+  ],
+  "completedAt": "2026-08-18T07:15:29.497Z"
+}

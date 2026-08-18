@@ -33,15 +33,19 @@ function validateBoard(board: string): void {
   }
 }
 
-export function parseFen(fen: string): { board: string; sideToMove: Side } {
+export function parseFen(fen: string): { board: string; fen: string; sideToMove: Side } {
   const fields = fen.trim().split(/\s+/)
   const [board, sideToken] = fields
-  if (!board || fields.length > 2) {
-    throw new Error('FEN must contain a board and an optional side-to-move field')
+  if (!board || ![1, 2, 6].includes(fields.length)) {
+    throw new Error('FEN must contain a board, an optional side-to-move field, or six FEN fields')
   }
 
   validateBoard(board)
-  return { board, sideToMove: sideFromFenToken(sideToken) }
+  const sideToMove = sideFromFenToken(sideToken)
+  const normalizedFen =
+    fields.length === 6 ? fields.join(' ') : `${board} ${sideToken ?? 'w'} - - 0 1`
+
+  return { board, fen: normalizedFen, sideToMove }
 }
 
 export function createPositionSnapshot(
@@ -53,10 +57,10 @@ export function createPositionSnapshot(
     throw new Error('Position version must be a non-negative integer')
   }
 
-  const { board, sideToMove } = parseFen(fen)
+  const { fen: normalizedFen, sideToMove } = parseFen(fen)
   return {
     positionVersion,
-    fen: board,
+    fen: normalizedFen,
     sideToMove,
     orientation,
     lastMove: null,
