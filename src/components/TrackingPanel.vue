@@ -44,6 +44,7 @@ function setSnapshot(value: RealtimeSnapshot): void {
 function accept(result: IpcResult<RealtimeSnapshot>, message?: string): void {
   if (!result.ok) {
     errorMessage.value = result.error.message
+    statusMessage.value = null
     return
   }
   setSnapshot(result.value)

@@ -97,6 +97,7 @@ export class EngineManager {
   private isRecovering = false
   private restartFailures = 0
   private restartWindowStartedAt = 0
+  private automaticRestartBlocked = false
   private readonly listeners = new Set<(event: AnalysisEvent) => void>()
 
   constructor(private readonly dependencies: EngineManagerDependencies = defaultDependencies) {}
@@ -114,6 +115,7 @@ export class EngineManager {
     const sha256 = this.hash(enginePath)
     this.stop()
     this.disposeProcess()
+    this.resetRecoveryState()
     this.engine = { path: enginePath, name: basename(enginePath), sha256 }
     return { name: this.engine.name, sha256: this.engine.sha256 }
   }
@@ -126,9 +128,14 @@ export class EngineManager {
   start(request: AnalysisStartInput): number {
     const { sideToMove } = parseFen(request.fen)
     this.assertEngine()
+    if (this.automaticRestartBlocked) {
+      throw new EngineStartError(
+        'ENGINE_START_FAILED',
+        'Pikafish automatic restart limit reached; retry analysis to continue',
+        true,
+      )
+    }
     this.clearRestartTimer()
-    this.isRecovering = false
-    this.restartFailures = 0
 
     const active: ActiveAnalysis = { analysisId: ++this.sequence, request, sideToMove }
     this.active = active
@@ -151,7 +158,7 @@ export class EngineManager {
     this.acceptingInfo = false
     this.clearProtocolTimer()
     this.clearRestartTimer()
-    this.isRecovering = false
+    this.resetRecoveryState()
     if (this.process) {
       this.process.stdin.write('stop\n')
       this.protocolPhase = 'IDLE'
@@ -164,11 +171,13 @@ export class EngineManager {
     this.disposeProcess()
   }
 
-  retry(): number {
-    if (!this.lastRequest) {
+  retry(request?: AnalysisStartInput): number {
+    const nextRequest = request ?? this.lastRequest
+    if (!nextRequest) {
       throw new EngineStartError('ENGINE_NOT_CONFIGURED', 'No previous analysis is available to retry', false)
     }
-    return this.start(this.lastRequest)
+    this.resetRecoveryState()
+    return this.start(nextRequest)
   }
 
   private assertEngine(): EngineConfiguration {
@@ -291,7 +300,6 @@ export class EngineManager {
     this.process.stdin.write(active.request.depth ? `go depth ${active.request.depth}\n` : 'go infinite\n')
     this.protocolPhase = 'ANALYZING'
     this.acceptingInfo = true
-    this.isRecovering = false
     this.emitState(active, 'ANALYZING')
   }
 
@@ -312,6 +320,7 @@ export class EngineManager {
 
     if (this.restartFailures >= RESTART_DELAYS_MS.length) {
       this.isRecovering = false
+      this.automaticRestartBlocked = true
       this.emitState(active, 'FAILED', `${message}; automatic restart limit reached`)
       return
     }
@@ -355,5 +364,12 @@ export class EngineManager {
   private clearRestartTimer(): void {
     if (this.restartTimer) this.dependencies.clearTimer(this.restartTimer)
     this.restartTimer = undefined
+  }
+
+  private resetRecoveryState(): void {
+    this.isRecovering = false
+    this.restartFailures = 0
+    this.restartWindowStartedAt = 0
+    this.automaticRestartBlocked = false
   }
 }

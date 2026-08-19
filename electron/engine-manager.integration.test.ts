@@ -47,7 +47,7 @@ describe.runIf(existsSync(ENGINE_PATH))('EngineManager with official Pikafish 20
     }
   }, 60_000)
 
-  it('recovers from 20 real process kills and reaches FAILED after three killed restart attempts', async () => {
+  it('recovers once, then reaches FAILED when short-lived replacements keep crashing', async () => {
     const processes: EngineProcess[] = []
     let failNextSpawns = 0
     const dependencies: EngineManagerDependencies = {
@@ -73,15 +73,13 @@ describe.runIf(existsSync(ENGINE_PATH))('EngineManager with official Pikafish 20
       manager.start({ fen: START_FEN, positionVersion: 1, multiPv: 3 })
       await firstInfo
 
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const restarting = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'RESTARTING')
-        const recovered = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'ANALYZING' && event.positionVersion === 1)
-        processes.at(-1)!.kill()
-        await restarting
-        await recovered
-      }
+      const restarting = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'RESTARTING')
+      const recovered = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'ANALYZING' && event.positionVersion === 1)
+      processes.at(-1)!.kill()
+      await restarting
+      await recovered
 
-      failNextSpawns = 3
+      failNextSpawns = 2
       const failed = waitForEvent(
         manager,
         (event) => event.type === 'state' && event.state === 'FAILED',

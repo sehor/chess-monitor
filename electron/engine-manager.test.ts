@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-import { EngineManager, type EngineManagerDependencies, type EngineProcess } from './engine-manager'
+import { EngineManager, EngineStartError, type EngineManagerDependencies, type EngineProcess } from './engine-manager'
 import type { AnalysisEvent } from '../src/shared/ipc'
 
 const START_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1'
@@ -153,5 +153,44 @@ describe('EngineManager', () => {
 
     processes[3].crash()
     expect(events.at(-1)).toMatchObject({ type: 'state', state: 'FAILED', positionVersion: 4 })
+  })
+
+  it('keeps the restart budget after each replacement process completes its handshake', async () => {
+    const { manager, events, processes } = harness()
+    manager.start({ fen: START_FEN, positionVersion: 5, multiPv: 3 })
+    finishHandshake(processes[0])
+
+    for (const [index, delay] of [250, 1_000, 2_000].entries()) {
+      processes[index].crash()
+      expect(events.at(-1)).toMatchObject({ type: 'state', state: 'RESTARTING' })
+      await vi.advanceTimersByTimeAsync(delay)
+      finishHandshake(processes[index + 1])
+    }
+
+    processes[3].crash()
+    expect(events.at(-1)).toMatchObject({ type: 'state', state: 'FAILED', positionVersion: 5 })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(processes).toHaveLength(4)
+  })
+
+  it('requires an explicit retry after the automatic restart limit is reached', async () => {
+    const { manager, events, processes } = harness()
+    manager.start({ fen: START_FEN, positionVersion: 6, multiPv: 3 })
+    finishHandshake(processes[0])
+
+    for (const [index, delay] of [250, 1_000, 2_000].entries()) {
+      processes[index].crash()
+      await vi.advanceTimersByTimeAsync(delay)
+    }
+    processes[3].crash()
+
+    expect(() => manager.start({ fen: START_FEN, positionVersion: 7, multiPv: 3 })).toThrowError(
+      expect.objectContaining<Partial<EngineStartError>>({ code: 'ENGINE_START_FAILED', retryable: true }),
+    )
+    expect(processes).toHaveLength(4)
+
+    expect(manager.retry({ fen: START_FEN, positionVersion: 7, multiPv: 3 })).toBeGreaterThan(0)
+    expect(processes).toHaveLength(5)
+    expect(events.at(-1)).toMatchObject({ type: 'state', state: 'STARTING', positionVersion: 7 })
   })
 })

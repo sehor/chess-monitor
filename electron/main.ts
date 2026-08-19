@@ -38,6 +38,7 @@ import { StudyCoordinator } from './study-coordinator'
 import { RecognitionCoordinator } from './recognition-coordinator'
 import { RecognitionWorkerError } from './recognition-worker'
 import { loadProfileRecognitionManifest } from './profile-model'
+import { completeRealtimeMutation, profileMutationGuard } from './ipc-policy'
 
 const sourceCache = new Map<string, Electron.DesktopCapturerSource>()
 let selectedSourceId: string | undefined
@@ -453,6 +454,10 @@ ipcMain.handle('profile:save', async (_event, input: unknown) => {
   if (!parsed.ok) return failure('INVALID_INPUT', parsed.error)
   const active = profileStore.getActive()
   const updatesActive = Boolean(active && parsed.value.id === active.id)
+  if (updatesActive) {
+    const blocked = profileMutationGuard(Boolean(realtimeCoordinator?.getTrackerSnapshot()))
+    if (blocked) return blocked
+  }
   let next: RecognitionCoordinator | null = null
   try {
     if (updatesActive && active) next = await prepareRecognitionCoordinator({ ...active, ...parsed.value, id: active.id })
@@ -475,6 +480,10 @@ ipcMain.handle('profile:save', async (_event, input: unknown) => {
 ipcMain.handle('profile:delete', async (_event, id: unknown) => {
   if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  if (profileStore.getActiveId() === id) {
+    const blocked = profileMutationGuard(Boolean(realtimeCoordinator?.getTrackerSnapshot()))
+    if (blocked) return blocked
+  }
   try {
     let deleted = false
     if (profileStore.getActiveId() === id) {
@@ -499,6 +508,10 @@ ipcMain.handle('profile:duplicate', (_event, id: unknown) => {
 ipcMain.handle('profile:set-enabled', async (_event, id: unknown, enabled: unknown) => {
   if (!isValidProfileId(id) || typeof enabled !== 'boolean') return failure('INVALID_INPUT', 'Profile enabled state is invalid')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  if (!enabled && profileStore.getActiveId() === id) {
+    const blocked = profileMutationGuard(Boolean(realtimeCoordinator?.getTrackerSnapshot()))
+    if (blocked) return blocked
+  }
   try {
     let updated: CaptureProfile
     if (!enabled && profileStore.getActiveId() === id) {
@@ -523,6 +536,10 @@ ipcMain.handle('profile:rollback', async (_event, id: unknown, profileVersion: u
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   const target = profileStore.getVersion(id, profileVersion as number)
   if (!target) return failure('PROFILE_NOT_FOUND', 'Profile rollback target does not exist')
+  if (profileStore.getActiveId() === id) {
+    const blocked = profileMutationGuard(Boolean(realtimeCoordinator?.getTrackerSnapshot()))
+    if (blocked) return blocked
+  }
   let next: RecognitionCoordinator | null = null
   try {
     if (profileStore.getActiveId() === id) next = await prepareRecognitionCoordinator(target)
@@ -552,6 +569,9 @@ ipcMain.handle('profile:set-active', async (_event, id: unknown) => {
   const candidate = id === null ? null : profileStore.get(id)
   if (id !== null && !candidate) return failure('PROFILE_NOT_FOUND', 'Profile does not exist')
   if (candidate && !candidate.isEnabled) return failure('INVALID_INPUT', 'Profile is disabled')
+  if (profileStore.getActiveId() === id) return success(candidate)
+  const blocked = profileMutationGuard(Boolean(realtimeCoordinator?.getTrackerSnapshot()))
+  if (blocked) return blocked
   try {
     await activateProfileRuntime(candidate, () => profileStore!.setActive(id))
     const active = profileStore.getActive()
@@ -683,8 +703,8 @@ ipcMain.handle('tracker:resync', (_event, fen: unknown) => {
   if (typeof fen !== 'string' || fen.length < 1 || fen.length > 512) return failure('INVALID_INPUT', 'FEN is invalid')
   try {
     parseFen(fen)
-    realtimeCoordinator.resync(fen)
-    return success(realtimeCoordinator.getTrackerSnapshot()!)
+    const snapshot = realtimeCoordinator.resync(fen)
+    return completeRealtimeMutation(snapshot, () => realtimeCoordinator!.getTrackerSnapshot()!)
   } catch {
     return failure('INVALID_INPUT', 'FEN is invalid')
   }
@@ -694,8 +714,8 @@ ipcMain.handle('tracker:confirm-candidate', (_event, move: unknown) => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   if (!isValidIccsMove(move)) return failure('INVALID_INPUT', 'Candidate move is invalid')
   try {
-    realtimeCoordinator.confirmCandidate(move)
-    return success(realtimeCoordinator.getTrackerSnapshot()!)
+    const snapshot = realtimeCoordinator.confirmCandidate(move)
+    return completeRealtimeMutation(snapshot, () => realtimeCoordinator!.getTrackerSnapshot()!)
   } catch (error) {
     return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Candidate cannot be confirmed')
   }
@@ -704,8 +724,8 @@ ipcMain.handle('tracker:confirm-candidate', (_event, move: unknown) => {
 ipcMain.handle('tracker:undo', () => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   try {
-    realtimeCoordinator.undo()
-    return success(realtimeCoordinator.getTrackerSnapshot()!)
+    const snapshot = realtimeCoordinator.undo()
+    return completeRealtimeMutation(snapshot, () => realtimeCoordinator!.getTrackerSnapshot()!)
   } catch (error) {
     return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Move cannot be undone')
   }
@@ -849,7 +869,8 @@ ipcMain.handle('realtime:resync', (_event, fen: unknown) => {
   if (typeof fen !== 'string' || fen.length < 1 || fen.length > 512) return failure('INVALID_INPUT', 'FEN is invalid')
   try {
     parseFen(fen)
-    return success(realtimeCoordinator.resync(fen))
+    const snapshot = realtimeCoordinator.resync(fen)
+    return completeRealtimeMutation(snapshot, (value) => value)
   } catch {
     return failure('INVALID_INPUT', 'FEN is invalid')
   }
@@ -859,7 +880,8 @@ ipcMain.handle('realtime:confirm-candidate', (_event, move: unknown) => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   if (!isValidIccsMove(move)) return failure('INVALID_INPUT', 'Candidate move is invalid')
   try {
-    return success(realtimeCoordinator.confirmCandidate(move))
+    const snapshot = realtimeCoordinator.confirmCandidate(move)
+    return completeRealtimeMutation(snapshot, (value) => value)
   } catch (error) {
     return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Candidate cannot be confirmed')
   }
@@ -868,7 +890,8 @@ ipcMain.handle('realtime:confirm-candidate', (_event, move: unknown) => {
 ipcMain.handle('realtime:undo', () => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   try {
-    return success(realtimeCoordinator.undo())
+    const snapshot = realtimeCoordinator.undo()
+    return completeRealtimeMutation(snapshot, (value) => value)
   } catch (error) {
     return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Move cannot be undone')
   }
@@ -889,7 +912,10 @@ ipcMain.handle('realtime:retry-analysis', () => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   try {
     return success(realtimeCoordinator.restartAnalysis())
-  } catch {
+  } catch (error) {
+    if (error instanceof EngineStartError) {
+      return failure(error.code, error.message, error.retryable)
+    }
     return failure('ENGINE_START_FAILED', 'Unable to restart Pikafish', true)
   }
 })

@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -7,6 +8,7 @@ import { expectedMovePoints } from '../src/domain/board-tracker'
 import { RulesAdapter } from '../src/domain/game'
 import type { AnalysisEvent, AnalysisStartInput, CaptureAnalysis } from '../src/shared/ipc'
 import { GameStore } from './game-store'
+import { EngineManager, type EngineManagerDependencies, type EngineProcess } from './engine-manager'
 import { RealtimeCoordinator, type RealtimeEngine } from './realtime-coordinator'
 
 const START_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1'
@@ -49,6 +51,10 @@ class FakeEngine implements RealtimeEngine {
     return analysisId
   }
 
+  retry(request: AnalysisStartInput): number {
+    return this.start(request)
+  }
+
   stop(): void {
     this.stopCount += 1
   }
@@ -62,6 +68,31 @@ async function databasePath(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'chess-monitor-realtime-'))
   directories.push(directory)
   return join(directory, 'games.sqlite3')
+}
+
+class CrashingEngineProcess extends EventEmitter implements EngineProcess {
+  readonly writes: string[] = []
+  readonly stdout = new EventEmitter() as EngineProcess['stdout']
+  readonly stdin = { write: (data: string) => this.writes.push(data) }
+  killed = false
+
+  output(line: string): void {
+    ;(this.stdout as EventEmitter).emit('data', Buffer.from(`${line}\n`))
+  }
+
+  kill(): void {
+    this.killed = true
+    this.emit('exit')
+  }
+
+  crash(): void {
+    this.emit('exit')
+  }
+}
+
+function finishEngineHandshake(process: CrashingEngineProcess): void {
+  process.output('uciok')
+  process.output('readyok')
 }
 
 function installPauseWriteFailure(path: string): DatabaseSync {
@@ -82,6 +113,106 @@ afterEach(async () => {
 })
 
 describe('RealtimeCoordinator', () => {
+  it('explicitly retries the latest realtime position after the engine circuit opens', async () => {
+    const store = new GameStore(await databasePath())
+    vi.useFakeTimers()
+    const processes: CrashingEngineProcess[] = []
+    const dependencies: EngineManagerDependencies = {
+      exists: () => true,
+      readFile: () => Buffer.from('fixed-engine'),
+      spawn: () => {
+        const process = new CrashingEngineProcess()
+        processes.push(process)
+        return process
+      },
+      setTimer: (callback, delay) => setTimeout(callback, delay),
+      clearTimer: clearTimeout,
+      now: Date.now,
+    }
+    const engine = new EngineManager(dependencies)
+    engine.selectEngine('E:\\engines\\pikafish.exe')
+    const coordinator = new RealtimeCoordinator(store, engine)
+
+    try {
+      coordinator.start({ fen: START_FEN, orientation: 'red-bottom' })
+      finishEngineHandshake(processes[0])
+
+      for (const [index, delay] of [250, 1_000, 2_000].entries()) {
+        processes[index].crash()
+        await vi.advanceTimersByTimeAsync(delay)
+        finishEngineHandshake(processes[index + 1])
+      }
+      processes[3].crash()
+      expect(coordinator.getSnapshot().analysis.state).toBe('FAILED')
+
+      expect(coordinator.resync(RESYNC_FEN)).toMatchObject({
+        position: { positionVersion: 1, fen: RESYNC_FEN },
+        analysis: { state: 'FAILED' },
+      })
+
+      expect(coordinator.restartAnalysis()).toMatchObject({
+        position: { positionVersion: 1, fen: RESYNC_FEN },
+        analysis: { state: 'STARTING', positionVersion: 1 },
+      })
+      expect(processes).toHaveLength(5)
+      finishEngineHandshake(processes[4])
+      expect(coordinator.getSnapshot()).toMatchObject({
+        position: { positionVersion: 1, fen: RESYNC_FEN },
+        analysis: { state: 'ANALYZING', positionVersion: 1 },
+      })
+    } finally {
+      coordinator.dispose()
+      store.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('propagates an explicit retry failure for the IPC boundary', async () => {
+    const store = new GameStore(await databasePath())
+    const engine = new FakeEngine()
+    const coordinator = new RealtimeCoordinator(store, engine)
+    coordinator.start({ fen: START_FEN, orientation: 'red-bottom' })
+    vi.spyOn(engine, 'retry').mockImplementationOnce(() => {
+      throw new Error('simulated explicit retry failure')
+    })
+
+    expect(() => coordinator.restartAnalysis()).toThrow('simulated explicit retry failure')
+    expect(coordinator.getSnapshot().analysis).toMatchObject({
+      state: 'FAILED',
+      message: 'simulated explicit retry failure',
+      isTrusted: false,
+    })
+
+    coordinator.dispose()
+    store.close()
+  })
+
+  it('keeps the previous in-memory state when creating a replacement session fails', async () => {
+    const store = new GameStore(await databasePath())
+    const engine = new FakeEngine()
+    const coordinator = new RealtimeCoordinator(store, engine)
+    const previous = coordinator.start({
+      fen: START_FEN,
+      orientation: 'red-bottom',
+      settings: { multiPv: 3, depth: 12 },
+    })
+    const stopCount = engine.stopCount
+    vi.spyOn(store, 'create').mockImplementationOnce(() => {
+      throw new Error('simulated create failure')
+    })
+
+    expect(() => coordinator.start({
+      fen: RESYNC_FEN,
+      orientation: 'black-bottom',
+      settings: { multiPv: 5, depth: 24 },
+    })).toThrow('simulated create failure')
+    expect(coordinator.getSnapshot()).toEqual(previous)
+    expect(engine.stopCount).toBe(stopCount)
+
+    coordinator.dispose()
+    store.close()
+  })
+
   it('rejects stale analysis across 100 rapid adjacent position versions', async () => {
     const store = new GameStore(await databasePath())
     const engine = new FakeEngine()

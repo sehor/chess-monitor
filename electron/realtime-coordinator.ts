@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS: RealtimeSettings = { multiPv: 3, depth: 16 }
 export interface RealtimeEngine {
   onEvent(listener: (event: AnalysisEvent) => void): () => void
   start(request: AnalysisStartInput): number
+  retry(request: AnalysisStartInput): number
   stop(): void
 }
 
@@ -103,10 +104,13 @@ export class RealtimeCoordinator {
   ): RealtimeSnapshot {
     const settings = { ...DEFAULT_SETTINGS, ...input.settings }
     this.assertSettings(settings)
+    const tracker = new BoardTracker(input.fen, input.orientation, options)
+    const session = this.store.create(tracker.snapshot().position.fen, input.orientation, settings, provenance)
+
     this.engine.stop()
     this.trackerOptions = options
-    this.tracker = new BoardTracker(input.fen, input.orientation, options)
-    this.session = this.store.create(this.tracker.snapshot().position.fen, input.orientation, settings, provenance)
+    this.tracker = tracker
+    this.session = session
     this.isPaused = false
     this.storageError = null
     this.analysisState = this.emptyAnalysis(this.tracker.snapshot().position.positionVersion)
@@ -236,7 +240,7 @@ export class RealtimeCoordinator {
 
   restartAnalysis(): RealtimeSnapshot {
     if (this.tracker && !this.isPaused && this.tracker.snapshot().state.status !== 'DESYNC') {
-      this.startAnalysis()
+      this.startAnalysis(true)
     }
     return this.getSnapshot()
   }
@@ -281,10 +285,17 @@ export class RealtimeCoordinator {
     if (shouldAnalyze) this.startAnalysis()
   }
 
-  private startAnalysis(): void {
+  private startAnalysis(isExplicitRetry = false): void {
     const position = this.tracker?.snapshot().position
     const settings = this.session?.settings
     if (!position || !settings || this.isPaused || this.storageError) return
+
+    const request: AnalysisStartInput = {
+      fen: position.fen,
+      positionVersion: position.positionVersion,
+      multiPv: settings.multiPv,
+      depth: settings.depth,
+    }
 
     this.currentAnalysisId = null
     this.analysisState = {
@@ -295,17 +306,15 @@ export class RealtimeCoordinator {
     }
     this.emit()
     try {
-      this.currentAnalysisId = this.engine.start({
-        fen: position.fen,
-        positionVersion: position.positionVersion,
-        multiPv: settings.multiPv,
-        depth: settings.depth,
-      })
+      this.currentAnalysisId = isExplicitRetry
+        ? this.engine.retry(request)
+        : this.engine.start(request)
     } catch (error) {
       this.analysisState.state = 'FAILED'
       this.analysisState.message = error instanceof Error ? error.message : '无法启动 Pikafish'
       this.analysisState.isTrusted = false
       this.emit()
+      if (isExplicitRetry) throw error
     }
   }
 
