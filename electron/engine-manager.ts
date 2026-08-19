@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { parseBestMove, parseEngineInfo } from '../src/shared/engine-protocol'
 import type { AnalysisEvent, AnalysisStartInput, AnalysisState, IpcErrorCode } from '../src/shared/ipc'
 import { parseFen, type Side } from '../src/domain/position'
+import { RulesAdapter } from '../src/domain/game'
 
 const MAX_OUTPUT_LINE_LENGTH = 64 * 1024
 const START_TIMEOUT_MS = 10_000
@@ -22,6 +23,25 @@ interface ActiveAnalysis {
   analysisId: number
   request: AnalysisStartInput
   sideToMove: Side
+}
+
+function legalPvPrefix(fen: string, pv: string[]): string[] {
+  const game = new RulesAdapter(fen)
+  const legal: string[] = []
+  for (const move of pv) {
+    try {
+      game.apply(move)
+      legal.push(move)
+    } catch {
+      break
+    }
+  }
+  return legal
+}
+
+function legalBestMove(fen: string, move: string | null): string | null {
+  if (!move) return null
+  return new RulesAdapter(fen).legalMoves().includes(move as `${string}${string}${string}${string}`) ? move : null
 }
 
 export interface EngineDescriptor {
@@ -236,7 +256,7 @@ export class EngineManager {
             ? { cp: rawInfo.score.cp * sign }
             : { mateIn: rawInfo.score.mateIn! * sign },
           nodes: rawInfo.nodes,
-          pv: rawInfo.pv,
+          pv: legalPvPrefix(active.request.fen, rawInfo.pv),
         },
       })
       return
@@ -248,7 +268,7 @@ export class EngineManager {
         type: 'bestmove',
         analysisId: active.analysisId,
         positionVersion: active.request.positionVersion,
-        move: bestMove.move,
+        move: legalBestMove(active.request.fen, bestMove.move),
       })
     }
   }
@@ -268,7 +288,7 @@ export class EngineManager {
     if (!this.process || this.active?.analysisId !== active.analysisId) return
     this.clearProtocolTimer()
     this.process.stdin.write(`position fen ${active.request.fen}\n`)
-    this.process.stdin.write('go infinite\n')
+    this.process.stdin.write(active.request.depth ? `go depth ${active.request.depth}\n` : 'go infinite\n')
     this.protocolPhase = 'ANALYZING'
     this.acceptingInfo = true
     this.isRecovering = false

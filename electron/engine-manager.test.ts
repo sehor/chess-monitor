@@ -71,14 +71,14 @@ describe('EngineManager', () => {
     process.output('readyok')
     expect(process.writes.at(-2)).toBe(`position fen ${START_FEN.replace(' w ', ' b ')}\n`)
     expect(process.writes.at(-1)).toBe('go infinite\n')
-    process.output('info depth 18 multipv 1 score cp 43 nodes 90071992547409930 pv h2e2')
-    process.output('bestmove h2e2')
+    process.output('info depth 18 multipv 1 score cp 43 nodes 90071992547409930 pv h7e7')
+    process.output('bestmove h7e7')
 
     expect(events).toContainEqual(expect.objectContaining({
       type: 'info',
       value: expect.objectContaining({ positionVersion: 7, score: { cp: -43 }, nodes: '90071992547409930' }),
     }))
-    expect(events).toContainEqual(expect.objectContaining({ type: 'bestmove', positionVersion: 7, move: 'h2e2' }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'bestmove', positionVersion: 7, move: 'h7e7' }))
   })
 
   it('drops old output across 100 rapid position switches', () => {
@@ -98,6 +98,26 @@ describe('EngineManager', () => {
     expect(infoEvents.map((event) => event.value.positionVersion)).toEqual(
       Array.from({ length: 100 }, (_, index) => index + 1),
     )
+  })
+
+  it('uses a configured depth and truncates illegal PV or bestmove output', () => {
+    const { manager, events, processes } = harness()
+    manager.start({ fen: START_FEN, positionVersion: 3, multiPv: 2, depth: 12 })
+    finishHandshake(processes[0])
+
+    expect(processes[0].writes.at(-1)).toBe('go depth 12\n')
+    processes[0].output('info depth 12 multipv 1 score cp 20 nodes 50 pv h2e2 a0a9')
+    processes[0].output('bestmove a0a9')
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'info',
+      value: expect.objectContaining({ positionVersion: 3, pv: ['h2e2'] }),
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'bestmove',
+      positionVersion: 3,
+      move: null,
+    }))
   })
 
   it('keeps only the latest request when a switch happens before uciok', () => {

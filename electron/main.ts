@@ -9,6 +9,9 @@ import {
   type CaptureSource,
   type CaptureSampleMetadataInput,
   type IpcResult,
+  type RealtimeSettings,
+  type RealtimeSnapshot,
+  type RealtimeStartInput,
 } from '../src/shared/ipc'
 import { EngineManager, EngineStartError } from './engine-manager'
 import { FrameAnalyzer } from '../src/shared/capture-analysis'
@@ -18,15 +21,18 @@ import { XiangqiGame } from '../src/domain/game'
 import { ProfileStore } from './profile-store'
 import type { CaptureSourceKind } from '../src/shared/profile'
 import { evaluateProfileCompatibility } from '../src/shared/profile'
-import { BoardTracker, type BoardTrackerEvent, type TrackerOptions } from '../src/domain/board-tracker'
+import type { TrackerOptions } from '../src/domain/board-tracker'
 import { parseFen, type Orientation } from '../src/domain/position'
+import { GameStore } from './game-store'
+import { RealtimeCoordinator } from './realtime-coordinator'
 
 const sourceCache = new Map<string, Electron.DesktopCapturerSource>()
 let selectedSourceId: string | undefined
 let selectedSourceName: string | undefined
 let selectedSourceKind: CaptureSourceKind | undefined
 let profileStore: ProfileStore | undefined
-let boardTracker: BoardTracker | undefined
+let gameStore: GameStore | undefined
+let realtimeCoordinator: RealtimeCoordinator | undefined
 const engineManager = new EngineManager()
 let frameAnalyzer = new FrameAnalyzer()
 let captureSampleRecords: CaptureSampleRecord[] = []
@@ -72,8 +78,23 @@ function isAnalysisStartInput(value: unknown): value is { fen: string; positionV
     (candidate.positionVersion as number) >= 0 &&
     Number.isInteger(candidate.multiPv) &&
     (candidate.multiPv as number) >= 1 &&
-    (candidate.multiPv as number) <= 5
+    (candidate.multiPv as number) <= 5 &&
+    (candidate.depth === undefined || (
+      Number.isInteger(candidate.depth) &&
+      (candidate.depth as number) >= 1 &&
+      (candidate.depth as number) <= 128
+    ))
   )
+}
+
+function parseRealtimeSettings(value: unknown): RealtimeSettings | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Record<string, unknown>
+  if (
+    !Number.isInteger(candidate.multiPv) || (candidate.multiPv as number) < 1 || (candidate.multiPv as number) > 5 ||
+    !Number.isInteger(candidate.depth) || (candidate.depth as number) < 1 || (candidate.depth as number) > 128
+  ) return null
+  return { multiPv: candidate.multiPv as number, depth: candidate.depth as number }
 }
 
 function parseTrackerStartInput(value: unknown): { fen: string; orientation: Orientation; options?: Partial<TrackerOptions> } | null {
@@ -108,9 +129,37 @@ function parseTrackerStartInput(value: unknown): { fen: string; orientation: Ori
   }
 }
 
-function emitTrackerEvents(events: BoardTrackerEvent[]): void {
-  for (const event of events) {
-    for (const window of BrowserWindow.getAllWindows()) window.webContents.send('tracker:event', event)
+function parseRealtimeStartInput(value: unknown): RealtimeStartInput | null {
+  const trackerInput = parseTrackerStartInput(value)
+  if (!trackerInput || !value || typeof value !== 'object') return null
+  const settingsValue = (value as Record<string, unknown>).settings
+  if (settingsValue === undefined) return trackerInput
+  if (!settingsValue || typeof settingsValue !== 'object' || Array.isArray(settingsValue)) return null
+  const settings = parseRealtimeSettings({ multiPv: 3, depth: 16, ...settingsValue })
+  return settings ? { ...trackerInput, settings } : null
+}
+
+function broadcast(channel: string, value: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, value)
+}
+
+function startRealtimeTracking(input: RealtimeStartInput): IpcResult<RealtimeSnapshot> {
+  const activeProfile = profileStore?.getActive()
+  if (!activeProfile) return failure('PROFILE_NOT_FOUND', 'Activate a valid Profile before starting tracking')
+  if (!realtimeCoordinator) return failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true)
+  try {
+    return success(realtimeCoordinator.start(input, {
+      changeThreshold: activeProfile.thresholds.high,
+      confirmThreshold: Math.min(1, Math.max(activeProfile.thresholds.high, activeProfile.thresholds.high * 1.5)),
+      animationWaitMs: activeProfile.animationWaitMs,
+      ...input.options,
+    }))
+  } catch (error) {
+    return failure(
+      'GAME_STORAGE_ERROR',
+      error instanceof Error ? error.message : 'Unable to start realtime tracking',
+      true,
+    )
   }
 }
 
@@ -317,7 +366,7 @@ ipcMain.handle('capture:analyze-frame', (_event, frame: unknown) => {
 
   try {
     const analysis = frameAnalyzer.analyze(frame)
-    if (boardTracker) {
+    if (realtimeCoordinator?.getTrackerSnapshot()) {
       const activeProfile = profileStore?.getActive()
       const sourceValid = Boolean(selectedSourceId && sourceCache.has(selectedSourceId))
       const sourceMatchesProfile = Boolean(
@@ -332,12 +381,12 @@ ipcMain.handle('capture:analyze-frame', (_event, frame: unknown) => {
             dpi: frame.dpi ?? activeProfile.frame.dpi,
           })
         : { state: 'recalibration-required' as const }
-      emitTrackerEvents(boardTracker.observe({
+      realtimeCoordinator.observe({
         capturedAt: Date.now(),
         sourceValid,
         profileValid: sourceMatchesProfile && compatibility.state === 'compatible',
         analysis,
-      }))
+      })
     }
     return success(analysis)
   } catch (error) {
@@ -350,77 +399,153 @@ ipcMain.handle('capture:analyze-frame', (_event, frame: unknown) => {
 ipcMain.handle('tracker:start', (_event, value: unknown) => {
   const input = parseTrackerStartInput(value)
   if (!input) return failure('INVALID_INPUT', 'Tracker start input is invalid')
-  const activeProfile = profileStore?.getActive()
-  if (!activeProfile) return failure('PROFILE_NOT_FOUND', 'Activate a valid Profile before starting tracking')
-  try {
-    boardTracker = new BoardTracker(input.fen, input.orientation, {
-      changeThreshold: activeProfile.thresholds.high,
-      confirmThreshold: Math.min(1, Math.max(activeProfile.thresholds.high, activeProfile.thresholds.high * 1.5)),
-      animationWaitMs: activeProfile.animationWaitMs,
-      ...input.options,
-    })
-    return success(boardTracker.snapshot())
-  } catch {
-    boardTracker = undefined
-    return failure('INVALID_INPUT', 'Tracker configuration is invalid')
-  }
+  const result = startRealtimeTracking(input)
+  return result.ok ? success(realtimeCoordinator!.getTrackerSnapshot()!) : result
 })
 
 ipcMain.handle('tracker:stop', () => {
-  if (!boardTracker) return success(null)
-  emitTrackerEvents(boardTracker.stop())
-  const snapshot = boardTracker.snapshot()
-  boardTracker = undefined
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return success(null)
+  const snapshot = realtimeCoordinator.getTrackerSnapshot()
+  realtimeCoordinator.stop()
   return success(snapshot)
 })
 
 ipcMain.handle('tracker:resync', (_event, fen: unknown) => {
-  if (!boardTracker) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   if (typeof fen !== 'string' || fen.length < 1 || fen.length > 512) return failure('INVALID_INPUT', 'FEN is invalid')
   try {
     parseFen(fen)
-    emitTrackerEvents(boardTracker.resync(fen, Date.now()))
-    return success(boardTracker.snapshot())
+    realtimeCoordinator.resync(fen)
+    return success(realtimeCoordinator.getTrackerSnapshot()!)
   } catch {
     return failure('INVALID_INPUT', 'FEN is invalid')
   }
 })
 
 ipcMain.handle('tracker:confirm-candidate', (_event, move: unknown) => {
-  if (!boardTracker) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   if (!isValidIccsMove(move)) return failure('INVALID_INPUT', 'Candidate move is invalid')
   try {
-    emitTrackerEvents(boardTracker.confirmCandidate(move, Date.now()))
-    return success(boardTracker.snapshot())
+    realtimeCoordinator.confirmCandidate(move)
+    return success(realtimeCoordinator.getTrackerSnapshot()!)
   } catch (error) {
     return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Candidate cannot be confirmed')
   }
 })
 
 ipcMain.handle('tracker:undo', () => {
-  if (!boardTracker) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   try {
-    emitTrackerEvents(boardTracker.undo(Date.now()))
-    return success(boardTracker.snapshot())
+    realtimeCoordinator.undo()
+    return success(realtimeCoordinator.getTrackerSnapshot()!)
   } catch (error) {
     return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Move cannot be undone')
   }
 })
 
-ipcMain.handle('tracker:get-state', () => success(boardTracker?.snapshot() ?? null))
+ipcMain.handle('tracker:get-state', () => success(realtimeCoordinator?.getTrackerSnapshot() ?? null))
 
 ipcMain.handle('tracker:export-diagnostics', async () => {
-  if (!boardTracker) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  const diagnostics = realtimeCoordinator?.diagnostics()
+  if (!diagnostics) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
   try {
     const directory = join(app.getPath('userData'), 'diagnostics')
     await mkdir(directory, { recursive: true })
     const fileName = `tracker-${Date.now()}.json`
-    await writeFile(join(directory, fileName), `${JSON.stringify(boardTracker.diagnostics(), null, 2)}\n`)
+    await writeFile(join(directory, fileName), `${JSON.stringify(diagnostics, null, 2)}\n`)
     return success({ fileName })
   } catch {
     return failure('PROFILE_STORAGE_ERROR', 'Unable to export tracker diagnostics', true)
   }
 })
+
+ipcMain.handle('realtime:start', (_event, value: unknown) => {
+  const input = parseRealtimeStartInput(value)
+  return input ? startRealtimeTracking(input) : failure('INVALID_INPUT', 'Realtime start input is invalid')
+})
+
+ipcMain.handle('realtime:pause', () => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  try {
+    return success(realtimeCoordinator.pause())
+  } catch {
+    return failure('GAME_STORAGE_ERROR', 'Unable to pause realtime tracking', true)
+  }
+})
+
+ipcMain.handle('realtime:resume', () => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  try {
+    return success(realtimeCoordinator.resume())
+  } catch {
+    return failure('GAME_STORAGE_ERROR', 'Unable to resume realtime tracking', true)
+  }
+})
+
+ipcMain.handle('realtime:stop', () => {
+  if (!realtimeCoordinator) return failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true)
+  try {
+    return success(realtimeCoordinator.stop())
+  } catch {
+    return failure('GAME_STORAGE_ERROR', 'Unable to stop realtime tracking', true)
+  }
+})
+
+ipcMain.handle('realtime:resync', (_event, fen: unknown) => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  if (typeof fen !== 'string' || fen.length < 1 || fen.length > 512) return failure('INVALID_INPUT', 'FEN is invalid')
+  try {
+    parseFen(fen)
+    return success(realtimeCoordinator.resync(fen))
+  } catch {
+    return failure('INVALID_INPUT', 'FEN is invalid')
+  }
+})
+
+ipcMain.handle('realtime:confirm-candidate', (_event, move: unknown) => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  if (!isValidIccsMove(move)) return failure('INVALID_INPUT', 'Candidate move is invalid')
+  try {
+    return success(realtimeCoordinator.confirmCandidate(move))
+  } catch (error) {
+    return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Candidate cannot be confirmed')
+  }
+})
+
+ipcMain.handle('realtime:undo', () => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  try {
+    return success(realtimeCoordinator.undo())
+  } catch (error) {
+    return failure('TRACKER_INVALID_STATE', error instanceof Error ? error.message : 'Move cannot be undone')
+  }
+})
+
+ipcMain.handle('realtime:configure', (_event, value: unknown) => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  const settings = parseRealtimeSettings(value)
+  if (!settings) return failure('INVALID_INPUT', 'Realtime analysis settings are invalid')
+  try {
+    return success(realtimeCoordinator.configure(settings))
+  } catch {
+    return failure('GAME_STORAGE_ERROR', 'Unable to save realtime analysis settings', true)
+  }
+})
+
+ipcMain.handle('realtime:retry-analysis', () => {
+  if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
+  try {
+    return success(realtimeCoordinator.restartAnalysis())
+  } catch {
+    return failure('ENGINE_START_FAILED', 'Unable to restart Pikafish', true)
+  }
+})
+
+ipcMain.handle('realtime:get-state', () =>
+  realtimeCoordinator
+    ? success(realtimeCoordinator.getSnapshot())
+    : failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true),
+)
 ipcMain.handle('capture:save-sample', async (_event, sample: unknown) => {
   if (!isPngSample(sample)) {
     return failure('INVALID_INPUT', 'Capture sample is invalid')
@@ -505,7 +630,9 @@ ipcMain.handle('analysis:select-engine', async () => {
   if (result.canceled || !result.filePaths[0]) return success(null)
 
   try {
-    return success(engineManager.selectEngine(result.filePaths[0]))
+    const descriptor = engineManager.selectEngine(result.filePaths[0])
+    realtimeCoordinator?.restartAnalysis()
+    return success(descriptor)
   } catch (error) {
     if (error instanceof EngineStartError) {
       return failure(error.code, error.message, error.retryable)
@@ -570,6 +697,15 @@ app.whenReady().then(() => {
     console.error('Unable to initialize profile storage', error)
   }
 
+  try {
+    gameStore = new GameStore(join(app.getPath('userData'), 'games.sqlite3'))
+    realtimeCoordinator = new RealtimeCoordinator(gameStore, engineManager)
+    realtimeCoordinator.onEvent((snapshot) => broadcast('realtime:event', snapshot))
+    realtimeCoordinator.onTrackerEvent((event) => broadcast('tracker:event', event))
+  } catch (error) {
+    console.error('Unable to initialize game storage', error)
+  }
+
   session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
     const selectedSource = selectedSourceId
       ? sourceCache.get(selectedSourceId)
@@ -591,6 +727,10 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  realtimeCoordinator?.dispose()
+  realtimeCoordinator = undefined
+  gameStore?.close()
+  gameStore = undefined
   profileStore?.close()
   profileStore = undefined
 })

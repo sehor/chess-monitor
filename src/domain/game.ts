@@ -34,9 +34,14 @@ export class RulesAdapter {
   constructor(
     fen = DEFAULT_POSITION,
     orientation: Orientation = 'red-bottom',
+    positionVersion = 0,
   ) {
     this.chess = new Chess(fen)
     this.orientation = orientation
+    if (!Number.isSafeInteger(positionVersion) || positionVersion < 0) {
+      throw new Error('Position version must be a non-negative integer')
+    }
+    this.positionVersion = positionVersion
   }
 
   snapshot(): PositionSnapshot {

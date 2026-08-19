@@ -31,18 +31,23 @@ describe.runIf(existsSync(ENGINE_PATH))('EngineManager with official Pikafish 20
   it('completes 100 ready-barrier switches with a valid first info event', async () => {
     const manager = new EngineManager()
     manager.selectEngine(ENGINE_PATH)
+    const latencies: number[] = []
     try {
       for (let version = 1; version <= 100; version += 1) {
+        const startedAt = performance.now()
         const info = waitForEvent(manager, (event) => event.type === 'info' && event.value.positionVersion === version)
         manager.start({ fen: START_FEN, positionVersion: version, multiPv: 3 })
         await info
+        latencies.push(performance.now() - startedAt)
       }
+      latencies.sort((left, right) => left - right)
+      expect(latencies[Math.ceil(latencies.length * 0.95) - 1]).toBeLessThan(2_000)
     } finally {
       manager.dispose()
     }
   }, 60_000)
 
-  it('recovers from a real process kill and reaches FAILED after three killed restart attempts', async () => {
+  it('recovers from 20 real process kills and reaches FAILED after three killed restart attempts', async () => {
     const processes: EngineProcess[] = []
     let failNextSpawns = 0
     const dependencies: EngineManagerDependencies = {
@@ -68,11 +73,13 @@ describe.runIf(existsSync(ENGINE_PATH))('EngineManager with official Pikafish 20
       manager.start({ fen: START_FEN, positionVersion: 1, multiPv: 3 })
       await firstInfo
 
-      const restarting = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'RESTARTING')
-      const recovered = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'ANALYZING' && event.positionVersion === 1)
-      processes.at(-1)!.kill()
-      await restarting
-      await recovered
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const restarting = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'RESTARTING')
+        const recovered = waitForEvent(manager, (event) => event.type === 'state' && event.state === 'ANALYZING' && event.positionVersion === 1)
+        processes.at(-1)!.kill()
+        await restarting
+        await recovered
+      }
 
       failNextSpawns = 3
       const failed = waitForEvent(
@@ -85,5 +92,5 @@ describe.runIf(existsSync(ENGINE_PATH))('EngineManager with official Pikafish 20
     } finally {
       manager.dispose()
     }
-  }, 20_000)
+  }, 30_000)
 })

@@ -359,9 +359,9 @@ onBeforeUnmount(() => {
         <p v-if="sampleMessage" class="status-message" role="status">{{ sampleMessage }}</p>
         <p v-if="profileMessage" class="status-message" role="status">{{ profileMessage }}</p>
         <ProfilePanel :draft="profileDraft" @apply="applySavedProfile" />
-        <TrackingPanel :ready="Boolean(selectedSource && calibrationPoints.length === 2 && frameAnalysis)" :orientation="orientation" />
         <CaptureSampleForm :disabled="!selectedSource || calibrationPoints.length !== 2" @save="saveCurrentSample" />
       </aside>
     </div>
+    <TrackingPanel :ready="Boolean(selectedSource && calibrationPoints.length === 2 && frameAnalysis)" :orientation="orientation" />
   </section>
 </template>

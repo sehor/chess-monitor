@@ -10,6 +10,7 @@ export const IPC_ERROR_CODES = [
   'PROFILE_NOT_FOUND',
   'PROFILE_STORAGE_ERROR',
   'TRACKER_INVALID_STATE',
+  'GAME_STORAGE_ERROR',
 ] as const
 
 export type IpcErrorCode = (typeof IPC_ERROR_CODES)[number]
@@ -53,8 +54,8 @@ export interface CaptureFrameInput {
   dpi?: number
 }
 
-import type { BoardTrackerEvent, BoardTrackerSnapshot, TrackerOptions } from '../domain/board-tracker'
-import type { Orientation } from '../domain/position'
+import type { BoardTrackerEvent, BoardTrackerSnapshot, MoveConfirmedEvent, TrackerOptions, TrackerState } from '../domain/board-tracker'
+import type { Orientation, PositionSnapshot } from '../domain/position'
 
 export interface TrackerStartInput {
   fen: string
@@ -158,6 +159,7 @@ export interface AnalysisStartInput {
   fen: string
   positionVersion: number
   multiPv: number
+  depth?: number
 }
 
 export interface EngineDescriptor {
@@ -172,6 +174,51 @@ export interface AnalysisApi {
   selectEngine(): Promise<IpcResult<EngineDescriptor | null>>
   getEngine(): Promise<IpcResult<EngineDescriptor | null>>
   onEvent(listener: (event: AnalysisEvent) => void): () => void
+}
+
+export interface RealtimeSettings {
+  multiPv: number
+  depth: number
+}
+
+export type RealtimeMonitoringState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'DESYNC' | 'ERROR'
+
+export interface RealtimeAnalysisSnapshot {
+  state: AnalysisState
+  message: string
+  positionVersion: number | null
+  isTrusted: boolean
+  lines: AnalysisInfo[]
+  bestMove: string | null
+}
+
+export interface RealtimeSnapshot {
+  gameId: string | null
+  monitoringState: RealtimeMonitoringState
+  monitoringMessage: string
+  trackerState: TrackerState | null
+  position: PositionSnapshot | null
+  confirmedMoves: MoveConfirmedEvent[]
+  analysis: RealtimeAnalysisSnapshot
+  settings: RealtimeSettings
+}
+
+export interface RealtimeStartInput extends TrackerStartInput {
+  settings?: Partial<RealtimeSettings>
+}
+
+export interface RealtimeApi {
+  start(input: RealtimeStartInput): Promise<IpcResult<RealtimeSnapshot>>
+  pause(): Promise<IpcResult<RealtimeSnapshot>>
+  resume(): Promise<IpcResult<RealtimeSnapshot>>
+  stop(): Promise<IpcResult<RealtimeSnapshot>>
+  resync(fen: string): Promise<IpcResult<RealtimeSnapshot>>
+  confirmCandidate(move: string): Promise<IpcResult<RealtimeSnapshot>>
+  undo(): Promise<IpcResult<RealtimeSnapshot>>
+  configure(settings: RealtimeSettings): Promise<IpcResult<RealtimeSnapshot>>
+  retryAnalysis(): Promise<IpcResult<RealtimeSnapshot>>
+  getState(): Promise<IpcResult<RealtimeSnapshot>>
+  onEvent(listener: (snapshot: RealtimeSnapshot) => void): () => void
 }
 
 export function success<T>(value: T): IpcResult<T> {

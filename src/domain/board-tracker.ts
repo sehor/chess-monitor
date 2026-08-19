@@ -90,6 +90,12 @@ export interface BoardTrackerDiagnostics {
   observations: TrackerDiagnosticObservation[]
 }
 
+export interface BoardTrackerRestoreState {
+  basePositionVersion: number
+  moves: IccsMove[]
+  confirmedMoveCount: number
+}
+
 const DEFAULT_OPTIONS: TrackerOptions = {
   changeThreshold: 0.0076,
   confirmThreshold: 0.02,
@@ -155,10 +161,17 @@ export class BoardTracker {
   private confirmedMoveCount = 0
   private diagnosticObservations: TrackerDiagnosticObservation[] = []
 
-  constructor(fen: string, orientation: Orientation, options: Partial<TrackerOptions> = {}) {
+  constructor(
+    fen: string,
+    orientation: Orientation,
+    options: Partial<TrackerOptions> = {},
+    restore?: BoardTrackerRestoreState,
+  ) {
     this.options = { ...DEFAULT_OPTIONS, ...options }
     validateOptions(this.options)
-    this.game = new RulesAdapter(fen, orientation)
+    this.game = new RulesAdapter(fen, orientation, restore?.basePositionVersion ?? 0)
+    for (const move of restore?.moves ?? []) this.game.apply(move)
+    this.confirmedMoveCount = restore?.confirmedMoveCount ?? 0
   }
 
   snapshot(): BoardTrackerSnapshot {

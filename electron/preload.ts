@@ -7,6 +7,10 @@ import type {
   CaptureFrameInput,
   CaptureSampleInput,
   ProfileApi,
+  RealtimeApi,
+  RealtimeSettings,
+  RealtimeSnapshot,
+  RealtimeStartInput,
   TrackerApi,
   TrackerStartInput,
 } from '../src/shared/ipc'
@@ -58,10 +62,29 @@ const tracker: TrackerApi = Object.freeze({
   },
 })
 
+const realtime: RealtimeApi = Object.freeze({
+  start: (input: RealtimeStartInput) => ipcRenderer.invoke('realtime:start', input),
+  pause: () => ipcRenderer.invoke('realtime:pause'),
+  resume: () => ipcRenderer.invoke('realtime:resume'),
+  stop: () => ipcRenderer.invoke('realtime:stop'),
+  resync: (fen: string) => ipcRenderer.invoke('realtime:resync', fen),
+  confirmCandidate: (move: string) => ipcRenderer.invoke('realtime:confirm-candidate', move),
+  undo: () => ipcRenderer.invoke('realtime:undo'),
+  configure: (settings: RealtimeSettings) => ipcRenderer.invoke('realtime:configure', settings),
+  retryAnalysis: () => ipcRenderer.invoke('realtime:retry-analysis'),
+  getState: () => ipcRenderer.invoke('realtime:get-state'),
+  onEvent: (listener: (snapshot: RealtimeSnapshot) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: RealtimeSnapshot) => listener(snapshot)
+    ipcRenderer.on('realtime:event', handler)
+    return () => ipcRenderer.removeListener('realtime:event', handler)
+  },
+})
+
 contextBridge.exposeInMainWorld('chessMonitor', {
   platform: process.platform,
   capture,
   analysis,
   profiles,
   tracker,
+  realtime,
 })
