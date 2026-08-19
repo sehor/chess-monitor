@@ -14,12 +14,14 @@ import type {
   RealtimeSettings,
   RealtimeSnapshot,
   RealtimeStartInput,
+  StudyApi,
   TrackerApi,
   TrackerStartInput,
 } from '../src/shared/ipc'
 import type { CaptureProfileInput, ProfileMatchContext } from '../src/shared/profile'
 import type { BoardTrackerEvent } from '../src/domain/board-tracker'
 import type { RecognitionCorrection } from '../src/domain/recognition'
+import type { StudyEvent } from '../src/shared/study'
 
 const capture: CaptureApi = Object.freeze({
   listSources: () => ipcRenderer.invoke('capture:list-sources'),
@@ -81,6 +83,24 @@ const recognition: RecognitionApi = Object.freeze({
   getState: () => ipcRenderer.invoke('recognition:get-state'),
 })
 
+const study: StudyApi = Object.freeze({
+  listGames: () => ipcRenderer.invoke('study:list-games'),
+  get: (gameId: string) => ipcRenderer.invoke('study:get', gameId),
+  importRecord: (text: string) => ipcRenderer.invoke('study:import', text),
+  exportBranch: (nodeId: string) => ipcRenderer.invoke('study:export-branch', nodeId),
+  createVariation: (gameId: string, parentNodeId: string, move: string) => ipcRenderer.invoke('study:create-variation', gameId, parentNodeId, move),
+  createFen: (gameId: string, fen: string) => ipcRenderer.invoke('study:create-fen', gameId, fen),
+  analyze: (nodeId: string, settings: RealtimeSettings) => ipcRenderer.invoke('study:analyze', nodeId, settings),
+  startReview: (gameId: string, settings: RealtimeSettings) => ipcRenderer.invoke('study:start-review', gameId, settings),
+  pauseReview: (gameId: string) => ipcRenderer.invoke('study:pause-review', gameId),
+  resumeReview: (gameId: string) => ipcRenderer.invoke('study:resume-review', gameId),
+  onEvent: (listener: (event: StudyEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: StudyEvent) => listener(event)
+    ipcRenderer.on('study:event', handler)
+    return () => ipcRenderer.removeListener('study:event', handler)
+  },
+})
+
 const realtime: RealtimeApi = Object.freeze({
   start: (input: RealtimeStartInput) => ipcRenderer.invoke('realtime:start', input),
   pause: () => ipcRenderer.invoke('realtime:pause'),
@@ -107,4 +127,5 @@ contextBridge.exposeInMainWorld('chessMonitor', {
   tracker,
   recognition,
   realtime,
+  study,
 })

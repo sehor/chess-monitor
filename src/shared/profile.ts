@@ -68,6 +68,11 @@ export interface CaptureProfileInput {
   model?: ProfileModelBinding
 }
 
+export type NormalizedCaptureProfileInput = CaptureProfileInput & Required<Pick<
+  CaptureProfileInput,
+  'client' | 'compatibility' | 'priority' | 'isEnabled' | 'matchRules' | 'model'
+>>
+
 export interface CaptureProfile extends Omit<CaptureProfileInput, 'id' | 'client' | 'compatibility' | 'priority' | 'isEnabled' | 'matchRules' | 'model'> {
   schemaVersion: typeof PROFILE_SCHEMA_VERSION
   profileVersion: number
@@ -112,6 +117,7 @@ export interface ProfilePackage {
 export interface ProfileMatchContext {
   source: { kind: CaptureSourceKind; name: string }
   frame: { width: number; height: number; dpi: number }
+  clientVersion?: string
 }
 
 export interface ProfileMatchCandidate {
@@ -139,6 +145,7 @@ export type ProfileParseResult<T> =
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 const SAFE_RELATIVE_MANIFEST = /^(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))(?![A-Za-z]:)(?![\\/])[A-Za-z0-9._/-]+\.json$/
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i
+const versionCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -161,6 +168,7 @@ function parseNullableVersionRange(value: unknown): { min: string | null; max: s
   if (!isRecord(value)) return null
   const valid = (candidate: unknown) => candidate === null || (typeof candidate === 'string' && candidate.length >= 1 && candidate.length <= 64)
   if (!valid(value.min) || !valid(value.max)) return null
+  if (typeof value.min === 'string' && typeof value.max === 'string' && versionCollator.compare(value.min, value.max) > 0) return null
   return { min: value.min as string | null, max: value.max as string | null }
 }
 
@@ -222,7 +230,7 @@ function parseModel(value: unknown): ProfileModelBinding | null {
   }
 }
 
-function parseInput(value: unknown): ProfileParseResult<CaptureProfileInput & Required<Pick<CaptureProfileInput, 'client' | 'compatibility' | 'priority' | 'isEnabled' | 'matchRules' | 'model'>>> {
+function parseInput(value: unknown): ProfileParseResult<NormalizedCaptureProfileInput> {
   if (!isRecord(value)) return { ok: false, error: 'Profile input must be an object' }
   const source = value.source
   const frame = value.frame
@@ -295,7 +303,7 @@ function parseInput(value: unknown): ProfileParseResult<CaptureProfileInput & Re
   }
 }
 
-export function parseCaptureProfileInput(value: unknown): ProfileParseResult<CaptureProfileInput> {
+export function parseCaptureProfileInput(value: unknown): ProfileParseResult<NormalizedCaptureProfileInput> {
   return parseInput(value)
 }
 
@@ -382,17 +390,37 @@ function matchRule(rule: ProfileMatchRule, sourceName: string): string | null {
   return null
 }
 
+function clientVersionMatches(range: ProfileCompatibilityRange['clientVersion'], version: string | undefined): boolean {
+  if (range.min === null && range.max === null) return true
+  if (!version) return false
+  if (range.min !== null && versionCollator.compare(version, range.min) < 0) return false
+  if (range.max !== null && versionCollator.compare(version, range.max) > 0) return false
+  return true
+}
+
+export function profileMatchesSource(
+  profile: CaptureProfile,
+  source: { kind: CaptureSourceKind; name: string },
+): { matches: boolean; reason: string | null } {
+  if (!profile.isEnabled || profile.source.kind !== source.kind) return { matches: false, reason: null }
+  const reason = profile.matchRules.map((rule) => matchRule(rule, source.name)).find((item): item is string => Boolean(item)) ?? null
+  return { matches: reason !== null, reason }
+}
+
 export function matchProfileCandidates(profiles: CaptureProfile[], context: ProfileMatchContext): ProfileMatchCandidate[] {
   const candidates: ProfileMatchCandidate[] = []
   for (const profile of profiles) {
-    if (!profile.isEnabled || profile.source.kind !== context.source.kind) continue
+    const sourceMatch = profileMatchesSource(profile, context.source)
+    if (!sourceMatch.matches) continue
     const compatibility = evaluateProfileCompatibility(profile, context.frame)
     if (compatibility.state !== 'compatible') continue
-    const matchedReason = profile.matchRules.map((rule) => matchRule(rule, context.source.name)).find((reason): reason is string => Boolean(reason))
-    if (!matchedReason) continue
+    if (!clientVersionMatches(profile.compatibility.clientVersion, context.clientVersion)) continue
+    const versionReason = context.clientVersion && (profile.compatibility.clientVersion.min !== null || profile.compatibility.clientVersion.max !== null)
+      ? `客户端版本 ${context.clientVersion} 位于声明的兼容范围`
+      : null
     candidates.push({
       profile,
-      reasons: [matchedReason, `DPI ${context.frame.dpi}% 位于 ${profile.compatibility.dpi.min}–${profile.compatibility.dpi.max}% 兼容范围`],
+      reasons: [sourceMatch.reason!, `DPI ${context.frame.dpi}% 位于 ${profile.compatibility.dpi.min}–${profile.compatibility.dpi.max}% 兼容范围`, ...(versionReason ? [versionReason] : [])],
       requiresConfirmation: true,
     })
   }

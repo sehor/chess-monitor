@@ -2,7 +2,7 @@ import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, type Ope
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import {
   failure,
   success,
@@ -20,14 +20,24 @@ import { resolveSelectedSourceId } from '../src/shared/capture-source'
 import { XiangqiGame } from '../src/domain/game'
 import { ProfileStore } from './profile-store'
 import type { CaptureProfile, CaptureSourceKind } from '../src/shared/profile'
-import { createProfilePackage, evaluateProfileCompatibility, matchProfileCandidates, parseProfilePackage, type ProfileMatchContext } from '../src/shared/profile'
+import {
+  createProfilePackage,
+  evaluateProfileCompatibility,
+  matchProfileCandidates,
+  parseCaptureProfileInput,
+  parseProfilePackage,
+  profileMatchesSource,
+  type ProfileMatchContext,
+} from '../src/shared/profile'
 import type { TrackerOptions } from '../src/domain/board-tracker'
 import { parseFen, type Orientation, type Side } from '../src/domain/position'
 import type { RecognitionCorrection } from '../src/domain/recognition'
 import { GameStore } from './game-store'
 import { RealtimeCoordinator } from './realtime-coordinator'
+import { StudyCoordinator } from './study-coordinator'
 import { RecognitionCoordinator } from './recognition-coordinator'
-import { loadRecognitionManifest, RecognitionWorkerError } from './recognition-worker'
+import { RecognitionWorkerError } from './recognition-worker'
+import { loadProfileRecognitionManifest } from './profile-model'
 
 const sourceCache = new Map<string, Electron.DesktopCapturerSource>()
 let selectedSourceId: string | undefined
@@ -36,13 +46,15 @@ let selectedSourceKind: CaptureSourceKind | undefined
 let profileStore: ProfileStore | undefined
 let gameStore: GameStore | undefined
 let realtimeCoordinator: RealtimeCoordinator | undefined
+let studyCoordinator: StudyCoordinator | undefined
 let recognitionCoordinator: RecognitionCoordinator | undefined
 let recognitionStartupError: RecognitionWorkerError | undefined
 const engineManager = new EngineManager()
+const studyEngineManager = new EngineManager()
 let frameAnalyzer = new FrameAnalyzer()
 let captureSampleRecords: CaptureSampleRecord[] = []
 
-engineManager.onEvent((event) => {
+studyEngineManager.onEvent((event) => {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('analysis:event', event)
   }
@@ -63,7 +75,8 @@ function isProfileMatchContext(value: unknown): value is ProfileMatchContext {
   const frame = candidate.frame as Record<string, unknown> | undefined
   return Boolean(
     source && ['window', 'screen'].includes(source.kind as string) && typeof source.name === 'string' && source.name.length <= 256 &&
-    frame && Number.isInteger(frame.width) && Number.isInteger(frame.height) && typeof frame.dpi === 'number' && Number.isFinite(frame.dpi),
+    frame && Number.isInteger(frame.width) && Number.isInteger(frame.height) && typeof frame.dpi === 'number' && Number.isFinite(frame.dpi) &&
+    (candidate.clientVersion === undefined || (typeof candidate.clientVersion === 'string' && candidate.clientVersion.length >= 1 && candidate.clientVersion.length <= 64)),
   )
 }
 
@@ -79,33 +92,45 @@ function recognitionResourceRoot(): string {
   return app.isPackaged ? join(process.resourcesPath, 'recognition') : join(process.cwd(), 'resources', 'recognition')
 }
 
-async function loadProfileRecognitionManifest(profile: CaptureProfile | null) {
-  const root = recognitionResourceRoot()
-  const manifestPath = profile?.model.strategy === 'dedicated'
-    ? join(root, profile.model.manifestPath)
-    : join(root, 'manifest.json')
-  if (profile?.model.strategy === 'dedicated') {
-    const manifestBytes = await readFile(manifestPath)
-    const actualManifestSha256 = createHash('sha256').update(manifestBytes).digest('hex')
-    if (actualManifestSha256 !== profile.model.manifestSha256) {
-      throw new RecognitionWorkerError('MODEL_HASH_MISMATCH', 'Profile recognition manifest hash does not match', false)
-    }
-  }
-  const manifest = await loadRecognitionManifest(manifestPath)
-  const expectedVersion = profile?.model.modelVersion
-  if (expectedVersion && manifest.modelVersion !== expectedVersion) {
-    throw new RecognitionWorkerError('MODEL_MANIFEST_INVALID', 'Profile recognition model version does not match its manifest', false)
-  }
-  return manifest
+async function prepareRecognitionCoordinator(profile: CaptureProfile | null): Promise<RecognitionCoordinator> {
+  const manifest = await loadProfileRecognitionManifest(recognitionResourceRoot(), profile)
+  return new RecognitionCoordinator({ manifest, timeoutMs: 1_500 })
 }
 
-async function switchRecognitionCoordinator(profile: CaptureProfile | null): Promise<void> {
-  const manifest = await loadProfileRecognitionManifest(profile)
-  const next = new RecognitionCoordinator({ manifest, timeoutMs: 1_500 })
+async function commitRecognitionCoordinator(next: RecognitionCoordinator): Promise<void> {
   const previous = recognitionCoordinator
   recognitionCoordinator = next
   recognitionStartupError = undefined
   await previous?.dispose()
+}
+
+async function switchRecognitionCoordinator(profile: CaptureProfile | null): Promise<void> {
+  await commitRecognitionCoordinator(await prepareRecognitionCoordinator(profile))
+}
+
+function configureProfileSource(profile: CaptureProfile | null): void {
+  const selectedSource = selectedSourceId ? sourceCache.get(selectedSourceId) : undefined
+  if (profile && selectedSource && profileMatchesSource(profile, { kind: sourceKind(selectedSource.id), name: selectedSource.name }).matches) {
+    selectedSourceName = selectedSource.name
+    selectedSourceKind = sourceKind(selectedSource.id)
+    return
+  }
+  selectedSourceId = undefined
+  selectedSourceName = profile?.source.name
+  selectedSourceKind = profile?.source.kind
+}
+
+async function activateProfileRuntime(profile: CaptureProfile | null, persist: () => void): Promise<void> {
+  const next = await prepareRecognitionCoordinator(profile)
+  try {
+    persist()
+  } catch (error) {
+    await next.dispose()
+    throw error
+  }
+  await commitRecognitionCoordinator(next)
+  configureProfileSource(profile)
+  configureFrameAnalyzer(profile)
 }
 
 function configureFrameAnalyzer(profile: ReturnType<ProfileStore['getActive']>): void {
@@ -359,6 +384,18 @@ async function listCaptureSources(): Promise<IpcResult<CaptureSource[]>> {
     const previousSourceId = selectedSourceId
     const namedSources = sources.map((source) => ({ ...source, kind: sourceKind(source.id) }))
     selectedSourceId = resolveSelectedSourceId(namedSources, selectedSourceId, selectedSourceName, selectedSourceKind)
+    if (!selectedSourceId) {
+      const activeProfile = profileStore?.getActive()
+      if (activeProfile) {
+        const matches = namedSources.filter((source) => profileMatchesSource(activeProfile, { kind: source.kind, name: source.name }).matches)
+        if (matches.length === 1) selectedSourceId = matches[0].id
+      }
+    }
+    if (selectedSourceId) {
+      const selected = sourceCache.get(selectedSourceId)
+      selectedSourceName = selected?.name
+      selectedSourceKind = sourceKind(selectedSourceId)
+    }
     if (selectedSourceId !== previousSourceId) resetFrameBaseline()
 
     return success(
@@ -410,23 +447,44 @@ ipcMain.handle('profile:list', () => {
   }
 })
 
-ipcMain.handle('profile:save', (_event, input: unknown) => {
+ipcMain.handle('profile:save', async (_event, input: unknown) => {
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  const parsed = parseCaptureProfileInput(input)
+  if (!parsed.ok) return failure('INVALID_INPUT', parsed.error)
+  const active = profileStore.getActive()
+  const updatesActive = Boolean(active && parsed.value.id === active.id)
+  let next: RecognitionCoordinator | null = null
   try {
-    return success(profileStore.save(input))
+    if (updatesActive && active) next = await prepareRecognitionCoordinator({ ...active, ...parsed.value, id: active.id })
+    const saved = profileStore.save(parsed.value)
+    if (next) {
+      await commitRecognitionCoordinator(next)
+      configureProfileSource(saved)
+      configureFrameAnalyzer(saved)
+    }
+    return success(saved)
   } catch (error) {
+    if (next && recognitionCoordinator !== next) await next.dispose()
+    if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
     return error instanceof TypeError
       ? failure('INVALID_INPUT', error.message)
       : failure('PROFILE_STORAGE_ERROR', 'Unable to save the profile', true)
   }
 })
 
-ipcMain.handle('profile:delete', (_event, id: unknown) => {
+ipcMain.handle('profile:delete', async (_event, id: unknown) => {
   if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   try {
-    return success({ deleted: profileStore.delete(id) })
-  } catch {
+    let deleted = false
+    if (profileStore.getActiveId() === id) {
+      await activateProfileRuntime(null, () => { deleted = profileStore!.delete(id) })
+    } else {
+      deleted = profileStore.delete(id)
+    }
+    return success({ deleted })
+  } catch (error) {
+    if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
     return failure('PROFILE_STORAGE_ERROR', 'Unable to delete the profile', true)
   }
 })
@@ -438,11 +496,20 @@ ipcMain.handle('profile:duplicate', (_event, id: unknown) => {
   catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to duplicate profile', true) }
 })
 
-ipcMain.handle('profile:set-enabled', (_event, id: unknown, enabled: unknown) => {
+ipcMain.handle('profile:set-enabled', async (_event, id: unknown, enabled: unknown) => {
   if (!isValidProfileId(id) || typeof enabled !== 'boolean') return failure('INVALID_INPUT', 'Profile enabled state is invalid')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
-  try { return success(profileStore.setEnabled(id, enabled)) }
-  catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to update profile', true) }
+  try {
+    let updated: CaptureProfile
+    if (!enabled && profileStore.getActiveId() === id) {
+      await activateProfileRuntime(null, () => { updated = profileStore!.setEnabled(id, false) })
+      return success(updated!)
+    }
+    return success(profileStore.setEnabled(id, enabled))
+  } catch (error) {
+    if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
+    return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to update profile', true)
+  }
 })
 
 ipcMain.handle('profile:list-versions', (_event, id: unknown) => {
@@ -451,11 +518,26 @@ ipcMain.handle('profile:list-versions', (_event, id: unknown) => {
   return success(profileStore.listVersions(id))
 })
 
-ipcMain.handle('profile:rollback', (_event, id: unknown, profileVersion: unknown) => {
+ipcMain.handle('profile:rollback', async (_event, id: unknown, profileVersion: unknown) => {
   if (!isValidProfileId(id) || !Number.isInteger(profileVersion) || (profileVersion as number) < 1) return failure('INVALID_INPUT', 'Profile rollback target is invalid')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
-  try { return success(profileStore.rollback(id, profileVersion as number)) }
-  catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to rollback profile', true) }
+  const target = profileStore.getVersion(id, profileVersion as number)
+  if (!target) return failure('PROFILE_NOT_FOUND', 'Profile rollback target does not exist')
+  let next: RecognitionCoordinator | null = null
+  try {
+    if (profileStore.getActiveId() === id) next = await prepareRecognitionCoordinator(target)
+    const rolledBack = profileStore.rollback(id, profileVersion as number)
+    if (next) {
+      await commitRecognitionCoordinator(next)
+      configureProfileSource(rolledBack)
+      configureFrameAnalyzer(rolledBack)
+    }
+    return success(rolledBack)
+  } catch (error) {
+    if (next && recognitionCoordinator !== next) await next.dispose()
+    if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
+    return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to rollback profile', true)
+  }
 })
 
 ipcMain.handle('profile:match', (_event, context: unknown) => {
@@ -471,13 +553,8 @@ ipcMain.handle('profile:set-active', async (_event, id: unknown) => {
   if (id !== null && !candidate) return failure('PROFILE_NOT_FOUND', 'Profile does not exist')
   if (candidate && !candidate.isEnabled) return failure('INVALID_INPUT', 'Profile is disabled')
   try {
-    await switchRecognitionCoordinator(candidate)
-    profileStore.setActive(id)
+    await activateProfileRuntime(candidate, () => profileStore!.setActive(id))
     const active = profileStore.getActive()
-    selectedSourceId = undefined
-    selectedSourceName = active?.source.name
-    selectedSourceKind = active?.source.kind
-    configureFrameAnalyzer(active)
     return success(active)
   } catch (error) {
     if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
@@ -523,10 +600,7 @@ ipcMain.handle('profile:import', async () => {
     const parsed = parseProfilePackage(parsedJson)
     if (!parsed.ok) return failure('INVALID_INPUT', parsed.error)
     if (parsed.value.profile.model.strategy === 'dedicated') {
-      const root = app.isPackaged ? join(process.resourcesPath, 'recognition') : join(process.cwd(), 'resources', 'recognition')
-      const manifestBytes = await readFile(join(root, parsed.value.profile.model.manifestPath))
-      const actual = createHash('sha256').update(manifestBytes).digest('hex')
-      if (actual !== parsed.value.profile.model.manifestSha256) return failure('INVALID_INPUT', 'Profile model manifest hash does not match')
+      await loadProfileRecognitionManifest(recognitionResourceRoot(), parsed.value.profile)
     }
     return success(profileStore.importPackage(parsed.value))
   } catch (error) {
@@ -560,8 +634,9 @@ ipcMain.handle('capture:analyze-frame', (_event, frame: unknown) => {
     const sourceValid = Boolean(selectedSourceId && sourceCache.has(selectedSourceId))
     const sourceMatchesProfile = Boolean(
       activeProfile &&
-      activeProfile.source.name === selectedSourceName &&
-      activeProfile.source.kind === selectedSourceKind,
+      selectedSourceName &&
+      selectedSourceKind &&
+      profileMatchesSource(activeProfile, { kind: selectedSourceKind, name: selectedSourceName }).matches,
     )
     const compatibility = activeProfile
       ? evaluateProfileCompatibility(activeProfile, {
@@ -824,6 +899,120 @@ ipcMain.handle('realtime:get-state', () =>
     ? success(realtimeCoordinator.getSnapshot())
     : failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true),
 )
+ipcMain.handle('study:list-games', () => {
+  if (!gameStore) return failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true)
+  try {
+    return success(gameStore.listGames())
+  } catch (error) {
+    return failure('GAME_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to list saved games', true)
+  }
+})
+
+ipcMain.handle('study:get', (_event, gameId: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(gameId)) return failure('INVALID_INPUT', 'Study game id is invalid')
+  try {
+    return success(studyCoordinator.getSnapshot(gameId))
+  } catch (error) {
+    return failure('GAME_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to load study', true)
+  }
+})
+
+ipcMain.handle('study:import', (_event, text: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (typeof text !== 'string' || text.length < 1 || text.length > 1024 * 1024) {
+    return failure('INVALID_INPUT', 'Study record is invalid or too large')
+  }
+  try {
+    return success(studyCoordinator.importRecord(text))
+  } catch (error) {
+    return failure('INVALID_INPUT', error instanceof Error ? error.message : 'Unable to import study record')
+  }
+})
+
+ipcMain.handle('study:export-branch', (_event, nodeId: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(nodeId)) return failure('INVALID_INPUT', 'Study node id is invalid')
+  try {
+    return success(studyCoordinator.exportBranch(nodeId))
+  } catch (error) {
+    return failure('GAME_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to export study branch', true)
+  }
+})
+
+ipcMain.handle('study:create-variation', (_event, gameId: unknown, parentNodeId: unknown, move: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(gameId) || !isValidProfileId(parentNodeId) || !isValidIccsMove(move)) {
+    return failure('INVALID_INPUT', 'Study variation input is invalid')
+  }
+  try {
+    return success(studyCoordinator.createVariation(gameId, parentNodeId, move))
+  } catch (error) {
+    return failure('INVALID_INPUT', error instanceof Error ? error.message : 'Variation move is illegal')
+  }
+})
+
+ipcMain.handle('study:create-fen', (_event, gameId: unknown, fen: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(gameId) || typeof fen !== 'string' || fen.length < 1 || fen.length > 512) {
+    return failure('INVALID_INPUT', 'Study FEN input is invalid')
+  }
+  try {
+    return success(studyCoordinator.createFen(gameId, fen))
+  } catch (error) {
+    return failure('INVALID_INPUT', error instanceof Error ? error.message : 'Study FEN is invalid')
+  }
+})
+
+ipcMain.handle('study:analyze', (_event, nodeId: unknown, value: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(nodeId)) return failure('INVALID_INPUT', 'Study node id is invalid')
+  const settings = parseRealtimeSettings(value)
+  if (!settings) return failure('INVALID_INPUT', 'Study analysis settings are invalid')
+  try {
+    const result = studyCoordinator.analyzeNode(nodeId, settings)
+    return success({ cached: result.cached })
+  } catch (error) {
+    if (error instanceof EngineStartError) return failure(error.code, error.message, error.retryable)
+    const message = error instanceof Error ? error.message : 'Unable to analyze study node'
+    return failure(message.includes('Choose a Pikafish') ? 'ENGINE_NOT_CONFIGURED' : 'ENGINE_START_FAILED', message, true)
+  }
+})
+
+ipcMain.handle('study:start-review', (_event, gameId: unknown, value: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(gameId)) return failure('INVALID_INPUT', 'Study game id is invalid')
+  const settings = parseRealtimeSettings(value)
+  if (!settings) return failure('INVALID_INPUT', 'Review settings are invalid')
+  try {
+    return success(studyCoordinator.startReview(gameId, settings))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to start review'
+    return failure(message.includes('Choose a Pikafish') ? 'ENGINE_NOT_CONFIGURED' : 'ENGINE_START_FAILED', message, true)
+  }
+})
+
+ipcMain.handle('study:pause-review', (_event, gameId: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(gameId)) return failure('INVALID_INPUT', 'Study game id is invalid')
+  try {
+    return success(studyCoordinator.pauseReview(gameId))
+  } catch (error) {
+    return failure('GAME_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to pause review', true)
+  }
+})
+
+ipcMain.handle('study:resume-review', (_event, gameId: unknown) => {
+  if (!studyCoordinator) return failure('GAME_STORAGE_ERROR', 'Study service is unavailable', true)
+  if (!isValidProfileId(gameId)) return failure('INVALID_INPUT', 'Study game id is invalid')
+  try {
+    return success(studyCoordinator.resumeReview(gameId))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to resume review'
+    return failure(message.includes('engine') || message.includes('Pikafish') ? 'ENGINE_NOT_CONFIGURED' : 'GAME_STORAGE_ERROR', message, true)
+  }
+})
+
 ipcMain.handle('capture:save-sample', async (_event, sample: unknown) => {
   if (!isPngSample(sample)) {
     return failure('INVALID_INPUT', 'Capture sample is invalid')
@@ -872,7 +1061,7 @@ ipcMain.handle('analysis:start', (_event, input: unknown): IpcResult<{ analysisI
 
   try {
     new XiangqiGame(input.fen)
-    return success({ analysisId: engineManager.start(input) })
+    return success({ analysisId: studyEngineManager.start(input) })
   } catch (error) {
     if (error instanceof EngineStartError) {
       return failure(error.code, error.message, error.retryable)
@@ -881,12 +1070,12 @@ ipcMain.handle('analysis:start', (_event, input: unknown): IpcResult<{ analysisI
   }
 })
 ipcMain.handle('analysis:stop', (): IpcResult<void> => {
-  engineManager.stop()
+  studyEngineManager.stop()
   return success(undefined)
 })
 ipcMain.handle('analysis:retry', (): IpcResult<{ analysisId: number }> => {
   try {
-    return success({ analysisId: engineManager.retry() })
+    return success({ analysisId: studyEngineManager.retry() })
   } catch (error) {
     if (error instanceof EngineStartError) {
       return failure(error.code, error.message, error.retryable)
@@ -908,7 +1097,8 @@ ipcMain.handle('analysis:select-engine', async () => {
   if (result.canceled || !result.filePaths[0]) return success(null)
 
   try {
-    const descriptor = engineManager.selectEngine(result.filePaths[0])
+    const descriptor = studyEngineManager.selectEngine(result.filePaths[0])
+    engineManager.selectEngine(result.filePaths[0])
     realtimeCoordinator?.restartAnalysis()
     return success(descriptor)
   } catch (error) {
@@ -919,7 +1109,7 @@ ipcMain.handle('analysis:select-engine', async () => {
   }
 })
 ipcMain.handle('analysis:get-engine', (): IpcResult<ReturnType<EngineManager['getEngine']>> =>
-  success(engineManager.getEngine()),
+  success(studyEngineManager.getEngine()),
 )
 
 function createWindow(): BrowserWindow {
@@ -987,6 +1177,8 @@ app.whenReady().then(async () => {
   try {
     gameStore = new GameStore(join(app.getPath('userData'), 'games.sqlite3'))
     realtimeCoordinator = new RealtimeCoordinator(gameStore, engineManager)
+    studyCoordinator = new StudyCoordinator(gameStore, studyEngineManager)
+    studyCoordinator.onEvent((event) => broadcast('study:event', event))
     realtimeCoordinator.onEvent((snapshot) => broadcast('realtime:event', snapshot))
     realtimeCoordinator.onTrackerEvent((event) => broadcast('tracker:event', event))
   } catch (error) {
@@ -1010,12 +1202,15 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   engineManager.dispose()
+  studyEngineManager.dispose()
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
   void recognitionCoordinator?.dispose()
   recognitionCoordinator = undefined
+  studyCoordinator?.dispose()
+  studyCoordinator = undefined
   realtimeCoordinator?.dispose()
   realtimeCoordinator = undefined
   gameStore?.close()

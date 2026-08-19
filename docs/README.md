@@ -17,6 +17,7 @@
 - [阶段 0–1 实施状态](./phase-00-implementation-status.md)：记录抓屏、校准、采集报告、规则/棋盘适配、Engine Manager、自动化资格门和仍需现场完成的证据。
 - 阶段 0 的开发与目标客户端量化验收已完成；项目方确认范围为 100%/125% DPI、共 200 个事件，报告见 `../artifacts/field-validation/capture-quality.md`。
 - 阶段 1 的代码与伪引擎自动化验收已完成；真实官方 Pikafish 二进制的握手、100 次切换、强制结束恢复和离线运行仍待目标设备复核。
+- [阶段 8 实施状态](./phase-08-implementation-status.md)：记录变化树、独立研究引擎、FEN/ICCS 导入导出、评估曲线、可恢复整盘复盘和疑问手/漏着标记的实现与自动化验收证据。
 
 ## 2. 总体技术路线
 

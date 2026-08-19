@@ -19,6 +19,7 @@ const frameAnalysis = ref<CaptureAnalysis | null>(null)
 const sampleMessage = ref<string | null>(null)
 const roiScale = ref(0.6)
 const orientation = ref<'red-bottom' | 'black-bottom'>('red-bottom')
+const currentClientVersion = ref('unknown')
 const profileMessage = ref<string | null>(null)
 const profileCandidates = ref<ProfileMatchCandidate[]>([])
 const staticNoiseSamples = ref<number[]>([])
@@ -146,6 +147,7 @@ async function refreshProfileCandidates(): Promise<void> {
   const result = await window.chessMonitor.profiles.match({
     source: { kind: source.kind, name: source.name },
     frame: { width: video.videoWidth, height: video.videoHeight, dpi: Math.round(window.devicePixelRatio * 100) },
+    clientVersion: currentClientVersion.value.trim() || undefined,
   })
   profileCandidates.value = result.ok ? result.value : []
 }
@@ -383,6 +385,8 @@ onBeforeUnmount(() => {
             <option value="red-bottom">红方在下</option>
             <option value="black-bottom">黑方在下</option>
           </select>
+          <label for="capture-client-version">当前客户端版本</label>
+          <input id="capture-client-version" v-model.trim="currentClientVersion" maxlength="64" @change="refreshProfileCandidates" />
         </div>
         <p class="capture-status" role="status">
           {{ calibrationPoints.length === 0 ? '点击预览中的棋盘左上交叉点。' : calibrationPoints.length === 1 ? '再点击右下交叉点。' : frameAnalysis?.isStable ? `已连续 ${frameAnalysis.stableFrameCount} 帧稳定。` : `检测到 ${frameAnalysis?.changedPointCount ?? 0} 个显著变化点；稳定帧 ${frameAnalysis?.stableFrameCount ?? 0}/3。` }}
@@ -401,7 +405,7 @@ onBeforeUnmount(() => {
         <p v-if="roiBoundaryWarning" class="error-message" role="alert">{{ roiBoundaryWarning }}</p>
         <p v-if="sampleMessage" class="status-message" role="status">{{ sampleMessage }}</p>
         <p v-if="profileMessage" class="status-message" role="status">{{ profileMessage }}</p>
-        <ProfilePanel :draft="profileDraft" @apply="applySavedProfile" />
+        <ProfilePanel :draft="profileDraft" :current-client-version="currentClientVersion" @apply="applySavedProfile" />
         <CaptureSampleForm :disabled="!selectedSource || calibrationPoints.length !== 2" @save="saveCurrentSample" />
       </aside>
     </div>

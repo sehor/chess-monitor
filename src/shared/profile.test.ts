@@ -5,6 +5,7 @@ import {
   parseCaptureProfile,
   parseCaptureProfileInput,
   parseProfilePackage,
+  profileMatchesSource,
   type CaptureProfile,
   type CaptureProfileInput,
 } from './profile'
@@ -78,6 +79,14 @@ describe('capture profile contract', () => {
       ...input,
       calibration: { topLeft: { x: 1, y: 1 }, bottomRight: { x: 801, y: 721 } },
     })).toEqual({ ok: false, error: 'Profile ROI extends outside the captured frame' })
+    expect(parseCaptureProfileInput({
+      ...input,
+      compatibility: {
+        dpi: { min: 100, max: 150 },
+        frameScale: { min: 0.5, max: 2 },
+        clientVersion: { min: '3.0', max: '2.0' },
+      },
+    }).ok).toBe(false)
   })
 
   it('migrates schema v1 records and rejects newer versions or corrupt timestamps', () => {
@@ -141,6 +150,27 @@ describe('capture profile contract', () => {
     expect(candidates[0]).toMatchObject({ requiresConfirmation: true })
     expect(candidates[0].reasons).toContain('捕获来源标题满足前缀规则')
     expect(candidates[1].reasons).toContain('捕获来源标题精确匹配')
+  })
+
+  it('uses declared client-version ranges and reusable source rules when matching candidates', () => {
+    const constrained = {
+      ...profile,
+      compatibility: {
+        ...profile.compatibility,
+        clientVersion: { min: '2.8.0', max: '2.9.9' },
+      },
+      matchRules: [{ mode: 'prefix' as const, value: '天天象棋' }],
+      source: { kind: 'window' as const, name: '天天象棋' },
+    }
+    const context = {
+      source: { kind: 'window' as const, name: '天天象棋 - 对局 123' },
+      frame: { width: 1600, height: 900, dpi: 125 },
+    }
+
+    expect(profileMatchesSource(constrained, context.source).matches).toBe(true)
+    expect(matchProfileCandidates([constrained], context)).toEqual([])
+    expect(matchProfileCandidates([constrained], { ...context, clientVersion: '2.7.9' })).toEqual([])
+    expect(matchProfileCandidates([constrained], { ...context, clientVersion: '2.9.0' })).toHaveLength(1)
   })
 
   it('rejects unsafe dedicated model bindings and unsafe import packages', () => {

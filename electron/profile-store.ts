@@ -137,6 +137,18 @@ export class ProfileStore {
     })
   }
 
+  getVersion(id: string, profileVersion: number): CaptureProfile | null {
+    const row = this.database.prepare('SELECT payload FROM profile_versions WHERE profile_id = ? AND profile_version = ?')
+      .get(id, profileVersion) as { payload?: unknown } | undefined
+    if (!row || typeof row.payload !== 'string') return null
+    try {
+      const parsed = parseCaptureProfile(JSON.parse(row.payload))
+      return parsed.ok ? parsed.value : null
+    } catch {
+      return null
+    }
+  }
+
   save(value: unknown): CaptureProfile {
     const parsed = parseCaptureProfileInput(value)
     if (!parsed.ok) throw new TypeError(parsed.error)
@@ -191,11 +203,9 @@ export class ProfileStore {
   }
 
   rollback(id: string, profileVersion: number): CaptureProfile {
-    const row = this.database.prepare('SELECT payload FROM profile_versions WHERE profile_id = ? AND profile_version = ?').get(id, profileVersion) as { payload?: unknown } | undefined
-    if (!row || typeof row.payload !== 'string') throw new Error('Profile version does not exist')
-    const parsed = parseCaptureProfile(JSON.parse(row.payload))
-    if (!parsed.ok) throw new Error('Profile version is corrupt')
-    return this.save({ ...parsed.value, id })
+    const target = this.getVersion(id, profileVersion)
+    if (!target) throw new Error('Profile version does not exist or is corrupt')
+    return this.save({ ...target, id })
   }
 
   importPackage(value: unknown): CaptureProfile {

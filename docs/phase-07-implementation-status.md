@@ -1,5 +1,14 @@
 # 阶段 7 实施状态
 
+## 2026-08-19 审查修复
+
+- 窗口来源恢复与实时门禁统一使用 Profile 的 exact/prefix/suffix 声明式匹配规则，避免候选可匹配但实际采集被拒绝。
+- 客户端版本兼容范围已参与候选过滤；未提供版本时，不再匹配带版本约束的 Profile；同时拒绝最小版本高于最大版本的输入。
+- 保存活动 Profile、回滚、启用/禁用及切换 Profile 时，RecognitionCoordinator、FrameAnalyzer、采集来源和棋局溯源信息保持原子一致；模型准备失败不会提交运行时切换。
+- 专用模型导入与激活共用完整校验链：资源目录约束、manifest SHA-256、模型 SHA-256、类别映射及 modelVersion 均需通过。
+- Profile Manager 支持编辑现有 Profile 并保留阈值、动画、模型绑定和扩展匹配规则，不再把编辑误保存为新的 shared-model Profile。
+
+
 ## 已实现
 
 - Profile schema v2：客户端/版本、主题、方向、DPI 范围、帧缩放范围、优先级、启用状态、受限窗口匹配规则、阈值、动画规则、模型绑定和 Profile 版本。

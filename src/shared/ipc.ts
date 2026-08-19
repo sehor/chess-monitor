@@ -72,6 +72,7 @@ export interface CaptureFrameInput {
 import type { BoardTrackerEvent, BoardTrackerSnapshot, MoveConfirmedEvent, TrackerOptions, TrackerState } from '../domain/board-tracker'
 import type { Orientation, PositionSnapshot, Side } from '../domain/position'
 import type { RecognitionClass, RecognitionCorrection, RecognitionEvaluation } from '../domain/recognition'
+import type { ReviewJob, StudyEvent, StudyGameSummary, StudyNode, StudySnapshot } from './study'
 
 export interface TrackerStartInput {
   fen: string
@@ -268,6 +269,20 @@ export interface RecognitionApi {
 }
 
 export { type RecognitionClass }
+
+export interface StudyApi {
+  listGames(): Promise<IpcResult<StudyGameSummary[]>>
+  get(gameId: string): Promise<IpcResult<StudySnapshot>>
+  importRecord(text: string): Promise<IpcResult<StudySnapshot>>
+  exportBranch(nodeId: string): Promise<IpcResult<string>>
+  createVariation(gameId: string, parentNodeId: string, move: string): Promise<IpcResult<StudyNode>>
+  createFen(gameId: string, fen: string): Promise<IpcResult<StudyNode>>
+  analyze(nodeId: string, settings: RealtimeSettings): Promise<IpcResult<{ cached: boolean }>>
+  startReview(gameId: string, settings: RealtimeSettings): Promise<IpcResult<ReviewJob>>
+  pauseReview(gameId: string): Promise<IpcResult<ReviewJob>>
+  resumeReview(gameId: string): Promise<IpcResult<ReviewJob>>
+  onEvent(listener: (event: StudyEvent) => void): () => void
+}
 
 export interface RealtimeApi {
   start(input: RealtimeStartInput): Promise<IpcResult<RealtimeSnapshot>>
