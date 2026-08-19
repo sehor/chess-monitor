@@ -31,13 +31,17 @@ export class ProfileStore {
   constructor(path: string) {
     this.database = new DatabaseSync(path)
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 2500;')
-    this.migrate()
+    try {
+      this.migrate()
+    } catch (error) {
+      this.database.close()
+      throw error
+    }
   }
 
   private migrate(): void {
     const currentVersion = readUserVersion(this.database)
     if (currentVersion > DATABASE_SCHEMA_VERSION) {
-      this.database.close()
       throw new Error(`Profile database schema ${currentVersion} is newer than supported schema ${DATABASE_SCHEMA_VERSION}`)
     }
     if (currentVersion === 0) {
@@ -66,31 +70,32 @@ export class ProfileStore {
       return
     }
     if (currentVersion === 1) {
-      this.database.exec(`
-        BEGIN IMMEDIATE;
-        CREATE TABLE IF NOT EXISTS profile_versions (
+      this.transaction(() => {
+        this.database.exec(`
+          CREATE TABLE IF NOT EXISTS profile_versions (
           profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
           profile_version INTEGER NOT NULL CHECK (profile_version >= 1),
           payload TEXT NOT NULL,
           created_at TEXT NOT NULL,
           PRIMARY KEY (profile_id, profile_version)
         );
-        PRAGMA user_version = 2;
-        COMMIT;
-      `)
-      const rows = this.database.prepare('SELECT id, payload, created_at FROM profiles').all() as unknown as Array<ProfileRow & { created_at: string }>
-      for (const row of rows) {
-        try {
-          const parsed = parseCaptureProfile(JSON.parse(row.payload))
+        `)
+        const rows = this.database.prepare('SELECT id, payload, created_at FROM profiles').all() as unknown as Array<ProfileRow & { created_at: string }>
+        for (const row of rows) {
+          let parsed: ReturnType<typeof parseCaptureProfile>
+          try {
+            parsed = parseCaptureProfile(JSON.parse(row.payload))
+          } catch {
+            continue
+          }
           if (!parsed.ok) continue
           const migrated = { ...parsed.value, profileVersion: 1 }
           this.database.prepare('UPDATE profiles SET payload = ? WHERE id = ?').run(JSON.stringify(migrated), row.id)
           this.database.prepare('INSERT OR IGNORE INTO profile_versions (profile_id, profile_version, payload, created_at) VALUES (?, 1, ?, ?)')
             .run(row.id, JSON.stringify(migrated), row.created_at)
-        } catch {
-          // Corrupt rows remain isolated and are reported by list().
         }
-      }
+        this.database.exec('PRAGMA user_version = 2')
+      })
     }
   }
 
@@ -152,7 +157,10 @@ export class ProfileStore {
   save(value: unknown): CaptureProfile {
     const parsed = parseCaptureProfileInput(value)
     if (!parsed.ok) throw new TypeError(parsed.error)
-    const input = parsed.value as CaptureProfileInput
+    return this.transaction(() => this.persistProfile(parsed.value as CaptureProfileInput))
+  }
+
+  private persistProfile(input: CaptureProfileInput): CaptureProfile {
     const now = new Date().toISOString()
     const id = input.id ?? randomUUID()
     const existing = this.get(id)
@@ -171,21 +179,14 @@ export class ProfileStore {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
-      this.database.prepare(`
-        INSERT INTO profiles (id, payload, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
-      `).run(id, JSON.stringify(profile), profile.createdAt, profile.updatedAt)
-      this.database.prepare('INSERT INTO profile_versions (profile_id, profile_version, payload, created_at) VALUES (?, ?, ?, ?)')
-        .run(id, profile.profileVersion, JSON.stringify(profile), now)
-      this.database.exec('COMMIT')
-      return profile
-    } catch (error) {
-      this.database.exec('ROLLBACK')
-      throw error
-    }
+    this.database.prepare(`
+      INSERT INTO profiles (id, payload, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+    `).run(id, JSON.stringify(profile), profile.createdAt, profile.updatedAt)
+    this.database.prepare('INSERT INTO profile_versions (profile_id, profile_version, payload, created_at) VALUES (?, ?, ?, ?)')
+      .run(id, profile.profileVersion, JSON.stringify(profile), now)
+    return profile
   }
 
   duplicate(id: string): CaptureProfile {
@@ -195,11 +196,13 @@ export class ProfileStore {
   }
 
   setEnabled(id: string, enabled: boolean): CaptureProfile {
-    const profile = this.get(id)
-    if (!profile) throw new Error('Profile does not exist')
-    const updated = this.save({ ...profile, isEnabled: enabled })
-    if (!enabled && this.getActiveId() === id) this.setActive(null)
-    return updated
+    return this.transaction(() => {
+      const profile = this.get(id)
+      if (!profile) throw new Error('Profile does not exist')
+      const updated = this.persistProfile({ ...profile, isEnabled: enabled })
+      if (!enabled && this.getActiveId() === id) this.writeActiveId(null)
+      return updated
+    })
   }
 
   rollback(id: string, profileVersion: number): CaptureProfile {
@@ -216,9 +219,12 @@ export class ProfileStore {
   }
 
   delete(id: string): boolean {
-    const result = this.database.prepare('DELETE FROM profiles WHERE id = ?').run(id)
-    if (this.getActiveId() === id) this.setActive(null)
-    return result.changes > 0
+    return this.transaction(() => {
+      const wasActive = this.getActiveId() === id
+      const result = this.database.prepare('DELETE FROM profiles WHERE id = ?').run(id)
+      if (wasActive) this.writeActiveId(null)
+      return result.changes > 0
+    })
   }
 
   setActive(id: string | null): void {
@@ -227,6 +233,10 @@ export class ProfileStore {
       if (!profile) throw new Error('Profile does not exist')
       if (!profile.isEnabled) throw new Error('Profile is disabled')
     }
+    this.writeActiveId(id)
+  }
+
+  private writeActiveId(id: string | null): void {
     if (id === null) {
       this.database.prepare('DELETE FROM app_settings WHERE key = ?').run(ACTIVE_PROFILE_KEY)
       return
@@ -257,6 +267,18 @@ export class ProfileStore {
       activeProfileId: this.getActiveId(),
       profile,
       issues: this.list().issues,
+    }
+  }
+
+  private transaction<T>(action: () => T): T {
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = action()
+      this.database.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
     }
   }
 

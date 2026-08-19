@@ -94,11 +94,9 @@ export class StudyCoordinator {
 
   importRecord(text: string): StudySnapshot {
     const record = parseStudyRecord(text)
-    const game = this.store.createStudyGame(record.rootFen, 'red-bottom', record.format === 'fen' ? 'fen' : 'import')
-    let parent = this.store.getStudyNodes(game.id)[0]
-    for (const move of record.moves) {
-      parent = this.store.createStudyChild(game.id, parent.id, move, 'import')
-    }
+    const game = record.format === 'fen'
+      ? this.store.createStudyGame(record.rootFen, 'red-bottom', 'fen')
+      : this.store.importStudyGame(record.rootFen, record.moves)
     this.emit({ type: 'study-updated', gameId: game.id })
     return this.getSnapshot(game.id)
   }
@@ -173,8 +171,7 @@ export class StudyCoordinator {
       this.emit({ type: 'review', value: paused })
     }
     this.pendingReviewGameId = null
-    this.store.replaceStudyMarks(gameId, [])
-    const job = this.store.saveReviewJob({
+    const job = this.store.resetReviewJob({
       gameId,
       status: 'running',
       depth: settings.depth,
@@ -250,7 +247,7 @@ export class StudyCoordinator {
     if (cached) {
       this.store.attachStudyAnalysis(node.id, key)
       this.advanceReview(gameId)
-      queueMicrotask(() => this.continueReview(gameId))
+      this.scheduleReviewContinuation(gameId)
       return
     }
     this.startEngineAnalysis('review', node, settings, key)
@@ -353,7 +350,7 @@ export class StudyCoordinator {
 
     if (purpose === 'review') {
       this.advanceReview(gameId)
-      queueMicrotask(() => this.continueReview(gameId))
+      this.scheduleReviewContinuation(gameId)
     } else {
       this.resumePendingReview()
     }
@@ -415,14 +412,12 @@ export class StudyCoordinator {
         createdAt: new Date().toISOString(),
       })
     }
-    this.store.replaceStudyMarks(gameId, marks)
-    const complete = this.store.updateReviewJob(gameId, {
-      status: 'completed',
-      nextIndex: nodes.length,
-      totalNodes: nodes.length,
-      completedNodes: nodes.length,
-      message: `整盘复盘完成，共标记 ${marks.length} 个疑问手/漏着`,
-    })
+    const complete = this.store.completeReviewJob(
+      gameId,
+      marks,
+      nodes.length,
+      `整盘复盘完成，共标记 ${marks.length} 个疑问手/漏着`,
+    )
     this.emit({ type: 'review', value: complete })
     this.emit({ type: 'study-updated', gameId })
   }
@@ -463,7 +458,32 @@ export class StudyCoordinator {
   private resumePendingReview(): void {
     const gameId = this.pendingReviewGameId
     this.pendingReviewGameId = null
-    if (gameId) queueMicrotask(() => this.continueReview(gameId))
+    if (gameId) this.scheduleReviewContinuation(gameId)
+  }
+
+  private scheduleReviewContinuation(gameId: string): void {
+    queueMicrotask(() => {
+      try {
+        this.continueReview(gameId)
+      } catch (error) {
+        this.failBackgroundReview(gameId, error)
+      }
+    })
+  }
+
+  private failBackgroundReview(gameId: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : '后台复盘任务失败'
+    try {
+      const job = this.store.getReviewJob(gameId)
+      if (!job || job.status !== 'running') return
+      const failed = this.store.updateReviewJob(gameId, {
+        status: 'failed',
+        message: `后台复盘任务失败：${message}`,
+      })
+      this.emit({ type: 'review', value: failed })
+    } catch (statusError) {
+      console.error('Unable to persist failed Study review state', statusError)
+    }
   }
 
   private setPendingReview(gameId: string): void {

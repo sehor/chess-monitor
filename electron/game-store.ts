@@ -414,6 +414,51 @@ export class GameStore {
     return this.get(id)!
   }
 
+  importStudyGame(
+    fen: string,
+    moves: string[],
+    orientation: Orientation = 'red-bottom',
+  ): PersistedGameSession {
+    const normalizedFen = new RulesAdapter(fen, orientation).snapshot().fen
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      this.insertGameRow(
+        id,
+        normalizedFen,
+        orientation,
+        { multiPv: 1, depth: 16 },
+        { profileId: null, profileVersion: null, modelVersion: null },
+        'finished',
+        now,
+      )
+      let parent = this.insertStudyNode({
+        gameId: id,
+        parentId: null,
+        source: 'import',
+        move: null,
+        fen: normalizedFen,
+        ply: 0,
+        livePositionVersion: null,
+        createdAt: now,
+      })
+      const game = new RulesAdapter(normalizedFen, orientation)
+      for (const move of moves) {
+        const next = game.apply(move)
+        parent = this.insertStudyNode({
+          gameId: id,
+          parentId: parent.id,
+          source: 'import',
+          move: next.lastMove,
+          fen: next.fen,
+          ply: parent.ply + 1,
+          livePositionVersion: null,
+        })
+      }
+    })
+    return this.get(id)!
+  }
+
   getActive(): PersistedGameSession | null {
     const row = this.database.prepare(`
       SELECT * FROM games WHERE status IN ('active', 'paused', 'error')
@@ -685,31 +730,7 @@ export class GameStore {
   }
 
   replaceStudyMarks(gameId: string, marks: StudyMark[]): void {
-    this.transaction(() => {
-      this.database.prepare(`
-        DELETE FROM study_marks WHERE node_id IN (SELECT id FROM position_nodes WHERE game_id = ?)
-      `).run(gameId)
-      const insert = this.database.prepare(`
-        INSERT INTO study_marks (
-          node_id, kind, mover, actual_move, best_move, loss_cp, mate_swing, explanation, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      for (const mark of marks) {
-        const node = this.getStudyNode(mark.nodeId)
-        if (!node || node.gameId !== gameId) throw new Error('Study mark node does not belong to game')
-        insert.run(
-          mark.nodeId,
-          mark.kind,
-          mark.mover,
-          mark.actualMove,
-          mark.bestMove,
-          mark.lossCp,
-          mark.mateSwing ? 1 : 0,
-          mark.explanation,
-          mark.createdAt,
-        )
-      }
-    })
+    this.transaction(() => this.writeStudyMarks(gameId, marks))
   }
 
   getStudyMarks(gameId: string): StudyMark[] {
@@ -732,6 +753,21 @@ export class GameStore {
   }
 
   saveReviewJob(job: ReviewJob): ReviewJob {
+    this.writeReviewJob(job)
+    return this.getReviewJob(job.gameId)!
+  }
+
+  resetReviewJob(job: ReviewJob): ReviewJob {
+    this.transaction(() => {
+      this.database.prepare(`
+        DELETE FROM study_marks WHERE node_id IN (SELECT id FROM position_nodes WHERE game_id = ?)
+      `).run(job.gameId)
+      this.writeReviewJob(job)
+    })
+    return this.getReviewJob(job.gameId)!
+  }
+
+  private writeReviewJob(job: ReviewJob): void {
     const updatedAt = new Date().toISOString()
     this.database.prepare(`
       INSERT INTO review_jobs (
@@ -762,13 +798,35 @@ export class GameStore {
       job.message,
       updatedAt,
     )
-    return this.getReviewJob(job.gameId)!
   }
 
   updateReviewJob(gameId: string, changes: Partial<Omit<ReviewJob, 'gameId'>>): ReviewJob {
     const current = this.getReviewJob(gameId)
     if (!current) throw new Error('Review job does not exist')
     return this.saveReviewJob({ ...current, ...changes, gameId })
+  }
+
+  completeReviewJob(
+    gameId: string,
+    marks: StudyMark[],
+    completedNodes: number,
+    message: string,
+  ): ReviewJob {
+    this.transaction(() => {
+      const current = this.getReviewJob(gameId)
+      if (!current) throw new Error('Review job does not exist')
+      this.writeStudyMarks(gameId, marks)
+      this.writeReviewJob({
+        ...current,
+        status: 'completed',
+        nextIndex: completedNodes,
+        totalNodes: completedNodes,
+        completedNodes,
+        message,
+        gameId,
+      })
+    })
+    return this.getReviewJob(gameId)!
   }
 
   getReviewJob(gameId: string): ReviewJob | null {
@@ -791,6 +849,32 @@ export class GameStore {
 
   close(): void {
     this.database.close()
+  }
+
+  private writeStudyMarks(gameId: string, marks: StudyMark[]): void {
+    this.database.prepare(`
+      DELETE FROM study_marks WHERE node_id IN (SELECT id FROM position_nodes WHERE game_id = ?)
+    `).run(gameId)
+    const insert = this.database.prepare(`
+      INSERT INTO study_marks (
+        node_id, kind, mover, actual_move, best_move, loss_cp, mate_swing, explanation, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const mark of marks) {
+      const node = this.getStudyNode(mark.nodeId)
+      if (!node || node.gameId !== gameId) throw new Error('Study mark node does not belong to game')
+      insert.run(
+        mark.nodeId,
+        mark.kind,
+        mark.mover,
+        mark.actualMove,
+        mark.bestMove,
+        mark.lossCp,
+        mark.mateSwing ? 1 : 0,
+        mark.explanation,
+        mark.createdAt,
+      )
+    }
   }
 
   private insertGameRow(

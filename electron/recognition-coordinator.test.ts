@@ -117,6 +117,56 @@ describe('RecognitionCoordinator', () => {
     await coordinator.dispose()
   })
 
+  it('does not allow corrections from the previous result while a new scan is running', async () => {
+    let resolveSecondScan: ((rows: number[][]) => void) | undefined
+    const output = probabilities().map((row) => row.map((value) => Math.log(value)))
+    let callCount = 0
+    const backend: RecognitionInferenceBackend = {
+      infer: vi.fn(() => {
+        callCount += 1
+        return callCount <= 2
+          ? Promise.resolve(output)
+          : new Promise<number[][]>((resolve) => { resolveSecondScan = resolve })
+      }),
+      dispose: vi.fn(async () => undefined),
+    }
+    const coordinator = new RecognitionCoordinator({ backend, timeoutMs: 200 })
+    coordinator.capture(frame(1), true)
+    coordinator.capture(frame(2), true)
+    await coordinator.scan({ orientation: 'red-bottom', sideToMove: 'red' })
+
+    const secondScan = coordinator.scan({ orientation: 'black-bottom', sideToMove: 'black' })
+    expect(coordinator.snapshot()).toMatchObject({ state: 'SCANNING', evaluation: null })
+    expect(() => coordinator.correct([{ point: 0, label: 'r' }])).toThrow(
+      'No recognition result is available for correction',
+    )
+
+    resolveSecondScan?.(output)
+    await secondScan
+    await coordinator.dispose()
+  })
+
+  it('rejects a concurrent scan without replacing the in-flight scan state', async () => {
+    let resolveInference: ((rows: number[][]) => void) | undefined
+    const output = probabilities().map((row) => row.map((value) => Math.log(value)))
+    const backend: RecognitionInferenceBackend = {
+      infer: vi.fn(() => new Promise<number[][]>((resolve) => { resolveInference = resolve })),
+      dispose: vi.fn(async () => undefined),
+    }
+    const coordinator = new RecognitionCoordinator({ backend, timeoutMs: 200 })
+    coordinator.capture(frame(1), true)
+
+    const firstScan = coordinator.scan({ orientation: 'red-bottom', sideToMove: 'red' })
+    await expect(coordinator.scan({ orientation: 'black-bottom', sideToMove: 'black' }))
+      .rejects.toThrow('Recognition scan is already in progress')
+    expect(backend.infer).toHaveBeenCalledTimes(1)
+    expect(coordinator.snapshot()).toMatchObject({ state: 'SCANNING', evaluation: null, error: null })
+
+    resolveInference?.(output)
+    await expect(firstScan).resolves.toMatchObject({ state: 'READY' })
+    await coordinator.dispose()
+  })
+
   it('requires correction when confidence is below the automatic gate', async () => {
     const low = probabilities(expand(START_FEN), 0.86)
     const coordinator = new RecognitionCoordinator({ backend: new FakeBackend([low, low]), timeoutMs: 200 })

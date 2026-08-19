@@ -56,18 +56,12 @@ async function stationarySamples(
       dpi,
       eventType: 'stationary',
       expectedChangedPoints: [],
-      gridErrorRatio: 0.02,
-      captureSucceeded: true,
+      gridErrorRatio: null,
+      captureSucceeded: fileStat.size > 0,
       orientation: 'red-bottom',
       roiScale: 0.6,
       sourceName: '整个屏幕（天天象棋棋盘裁剪）',
-      analysis: {
-        isStable: true,
-        stableFrameCount: 3,
-        changedPointCount: 0,
-        medianScore: 0,
-        pointScores: Array(90).fill(0),
-      },
+      analysis: null,
     }
   }))
 }
@@ -79,10 +73,11 @@ async function moveSamples(
 ): Promise<CaptureSampleRecord[]> {
   const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as MoveManifest
   const review = JSON.parse(await readFile(join(directory, 'review.json'), 'utf8')) as MoveReview
-  return review.accepted.map((accepted) => {
+  return Promise.all(review.accepted.map(async (accepted) => {
     const state = manifest.states.find((candidate) => candidate.index === accepted.stateIndex)
     if (!state) throw new Error(`Missing state ${accepted.stateIndex} in ${directory}`)
     const expectedChangedPoints = accepted.expectedChangedPoints.map((point) => point - 1)
+    const imageStat = await stat(join(directory, state.fileName))
     return {
       sampleId: `${gameId}-state-${String(state.index).padStart(3, '0')}`,
       fileName: relative(validationRoot, join(directory, state.fileName)).replaceAll('\\', '/'),
@@ -92,8 +87,8 @@ async function moveSamples(
       dpi,
       eventType: accepted.eventType,
       expectedChangedPoints,
-      gridErrorRatio: 0.02,
-      captureSucceeded: true,
+      gridErrorRatio: null,
+      captureSucceeded: imageStat.size > 0,
       orientation: 'red-bottom',
       roiScale: 0.6,
       sourceName: '整个屏幕（天天象棋棋盘裁剪）',
@@ -105,7 +100,7 @@ async function moveSamples(
         pointScores: state.pointScores,
       },
     }
-  })
+  }))
 }
 
 const samples = [

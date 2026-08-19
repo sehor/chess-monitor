@@ -228,4 +228,60 @@ describe('GameStore', () => {
     })
     reopened.close()
   })
+
+  it('rolls back replacement marks when completing the review job fails', async () => {
+    const path = await databasePath()
+    const seed = new GameStore(path)
+    const session = seed.createStudyGame(START_FEN)
+    const root = seed.getStudyNodes(session.id)[0]
+    const existingMark = {
+      nodeId: root.id,
+      kind: 'question' as const,
+      mover: 'red' as const,
+      actualMove: 'h2e2',
+      bestMove: 'h2e2',
+      lossCp: 120,
+      mateSwing: false,
+      explanation: 'existing mark',
+      createdAt: new Date().toISOString(),
+    }
+    seed.replaceStudyMarks(session.id, [existingMark])
+    seed.saveReviewJob({
+      gameId: session.id,
+      status: 'running',
+      depth: 12,
+      multiPv: 1,
+      nextIndex: 0,
+      totalNodes: 1,
+      completedNodes: 0,
+      nodeIds: [root.id],
+      engineSha256: 'b'.repeat(64),
+      message: '复盘中',
+    })
+    seed.close()
+
+    const database = new DatabaseSync(path)
+    database.exec(`
+      CREATE TRIGGER fail_review_completion
+      BEFORE UPDATE ON review_jobs
+      WHEN NEW.status = 'completed'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated review completion failure');
+      END;
+    `)
+    database.close()
+
+    const store = new GameStore(path)
+    const replacementMark = { ...existingMark, explanation: 'replacement mark' }
+    expect(() => store.completeReviewJob(session.id, [replacementMark], 1, '复盘完成'))
+      .toThrow('simulated review completion failure')
+    expect(store.getStudyMarks(session.id)).toEqual([expect.objectContaining({ explanation: 'existing mark' })])
+    expect(store.getReviewJob(session.id)).toMatchObject({
+      status: 'running',
+      nextIndex: 0,
+      completedNodes: 0,
+      message: '复盘中',
+    })
+    store.close()
+  })
 })

@@ -56,6 +56,18 @@ describe('capture quality reporting', () => {
     expect(report.markdown).toContain('质量门：未通过')
   })
 
+  it('does not report a stationary false-positive success rate without measured analysis', () => {
+    const summary = buildCaptureQualitySummary([sample({
+      eventType: 'stationary',
+      expectedChangedPoints: [],
+      gridErrorRatio: null,
+      analysis: null,
+    })])
+    expect(summary.maximumGridErrorRatio).toBeNull()
+    expect(summary.stationaryFalsePositiveRate).toBeNull()
+    expect(summary.meetsQualityGate).toBe(false)
+  })
+
   it('uses the approved 100% and 125% two-DPI acceptance scope', () => {
     const samples = [
       ...Array.from({ length: 100 }, (_, index) => sample({

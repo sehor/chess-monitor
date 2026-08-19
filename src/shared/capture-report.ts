@@ -69,9 +69,9 @@ export function buildCaptureQualitySummary(samples: CaptureSampleRecord[], highT
     if (!sample.captureSucceeded || (sample.gridErrorRatio !== null && sample.gridErrorRatio > 0.1)) {
       failedSampleIds.add(sample.sampleId)
     }
-    if (sample.eventType === 'stationary') {
+    if (sample.eventType === 'stationary' && sample.analysis) {
       stationaryFrames += 1
-      if ((sample.analysis?.changedPointCount ?? 0) > 0) {
+      if (sample.analysis.changedPointCount > 0) {
         falsePositiveFrames += 1
         failedSampleIds.add(sample.sampleId)
       }

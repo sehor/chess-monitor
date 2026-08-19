@@ -89,6 +89,7 @@ export class RecognitionCoordinator {
   }
 
   async scan(input: RecognitionScanInput): Promise<RecognitionSnapshot> {
+    if (this.state === 'SCANNING') throw new Error('Recognition scan is already in progress')
     if (this.frames.length < 1) {
       this.state = 'ERROR'
       this.message = '没有可用于完整识别的稳定棋盘帧'
@@ -100,6 +101,7 @@ export class RecognitionCoordinator {
     this.message = '正在进行完整棋盘识别'
     this.error = null
     this.evaluation = null
+    this.probabilities = null
     this.scanInput = { ...input }
     this.corrections = []
     const scanGeneration = this.generation

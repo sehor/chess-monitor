@@ -120,6 +120,7 @@ describe('RealtimeCoordinator', () => {
     const dependencies: EngineManagerDependencies = {
       exists: () => true,
       readFile: () => Buffer.from('fixed-engine'),
+      stat: () => ({ size: 12, mtimeMs: 1 }),
       spawn: () => {
         const process = new CrashingEngineProcess()
         processes.push(process)
@@ -449,6 +450,32 @@ describe('RealtimeCoordinator', () => {
     })
     reopened.dispose()
     reopenedStore.close()
+  })
+
+  it('restores an interrupted active game as paused until capture is resumed explicitly', async () => {
+    const path = await databasePath()
+    const firstStore = new GameStore(path)
+    const first = new RealtimeCoordinator(firstStore, new FakeEngine())
+    const started = first.start({ fen: START_FEN, orientation: 'red-bottom' })
+    first.dispose()
+    firstStore.close()
+
+    const reopenedStore = new GameStore(path)
+    const engine = new FakeEngine()
+    const reopened = new RealtimeCoordinator(reopenedStore, engine)
+    try {
+      expect(reopened.getSnapshot()).toMatchObject({
+        gameId: started.gameId,
+        monitoringState: 'PAUSED',
+        position: { positionVersion: 0, fen: START_FEN },
+        analysis: { state: 'STOPPED', isTrusted: false },
+      })
+      expect(reopenedStore.getActive()?.status).toBe('paused')
+      expect(engine.requests).toHaveLength(0)
+    } finally {
+      reopened.dispose()
+      reopenedStore.close()
+    }
   })
 
   it('stores one final analysis summary instead of persisting intermediate info events', async () => {

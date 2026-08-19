@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { EngineManager, type EngineManagerDependencies, type EngineProcess } from './engine-manager'
@@ -53,6 +53,10 @@ describe.runIf(existsSync(ENGINE_PATH))('EngineManager with official Pikafish 20
     const dependencies: EngineManagerDependencies = {
       exists: existsSync,
       readFile: readFileSync,
+      stat: (path) => {
+        const value = statSync(path)
+        return { size: value.size, mtimeMs: value.mtimeMs }
+      },
       spawn: (path, cwd) => {
         const child = spawn(path, [], { cwd, shell: false, windowsHide: true, stdio: 'pipe' })
         processes.push(child)

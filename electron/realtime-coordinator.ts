@@ -58,7 +58,12 @@ export class RealtimeCoordinator {
   ) {
     this.removeEngineListener = engine.onEvent((event) => this.handleEngineEvent(event))
     const active = store.getActive()
-    if (active) this.restore(active)
+    if (active) {
+      const recovered = active.status === 'active'
+        ? store.setStatus(active.id, 'paused')
+        : active
+      this.restore(recovered)
+    }
   }
 
   onEvent(listener: (snapshot: RealtimeSnapshot) => void): () => void {

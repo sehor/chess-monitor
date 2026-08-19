@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_POSITION } from '@west-shell/xiangqi.js'
 import { RulesAdapter } from '../src/domain/game'
@@ -110,6 +111,73 @@ afterEach(async () => {
 })
 
 describe('StudyCoordinator', () => {
+  it('rolls back an imported game when creating a later child node fails', async () => {
+    const path = await databasePath()
+    const seed = new GameStore(path)
+    seed.close()
+    const database = new DatabaseSync(path)
+    database.exec(`
+      CREATE TRIGGER fail_second_import_child
+      BEFORE INSERT ON position_nodes
+      WHEN NEW.source = 'import' AND NEW.ply = 2
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated import failure');
+      END;
+    `)
+    database.close()
+    const store = new GameStore(path)
+    const coordinator = new StudyCoordinator(store, new FakeStudyEngine())
+
+    try {
+      expect(() => coordinator.importRecord(serializeStudyRecord(recordWithPlies(3))))
+        .toThrow('simulated import failure')
+      expect(store.listGames()).toEqual([])
+    } finally {
+      coordinator.dispose()
+      store.close()
+    }
+  })
+
+  it('keeps existing marks when resetting a review job fails', async () => {
+    const path = await databasePath()
+    const seed = new GameStore(path)
+    const game = seed.createStudyGame(DEFAULT_POSITION)
+    const root = seed.getStudyNodes(game.id)[0]
+    seed.replaceStudyMarks(game.id, [{
+      nodeId: root.id,
+      kind: 'question',
+      mover: 'red',
+      actualMove: 'h2e2',
+      bestMove: 'h2e2',
+      lossCp: 120,
+      mateSwing: false,
+      explanation: 'existing mark',
+      createdAt: new Date().toISOString(),
+    }])
+    seed.close()
+    const database = new DatabaseSync(path)
+    database.exec(`
+      CREATE TRIGGER fail_review_job
+      BEFORE INSERT ON review_jobs
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated review failure');
+      END;
+    `)
+    database.close()
+    const store = new GameStore(path)
+    const coordinator = new StudyCoordinator(store, new FakeStudyEngine())
+
+    try {
+      expect(() => coordinator.startReview(game.id, { multiPv: 1, depth: 16 }))
+        .toThrow('simulated review failure')
+      expect(store.getStudyMarks(game.id)).toEqual([expect.objectContaining({ explanation: 'existing mark' })])
+      expect(store.getReviewJob(game.id)).toBeNull()
+    } finally {
+      coordinator.dispose()
+      store.close()
+    }
+  })
+
   it('imports, saves and exports 50 legal games without changing the selected line', async () => {
     const store = new GameStore(await databasePath())
     const coordinator = new StudyCoordinator(store, new FakeStudyEngine())
@@ -225,6 +293,40 @@ describe('StudyCoordinator', () => {
     engine.externalStop()
     expect(store.getReviewJob(session.id)).toMatchObject({ status: 'failed' })
 
+    coordinator.dispose()
+    store.close()
+  })
+
+  it('marks a review failed without leaking a background completion error', async () => {
+    const path = await databasePath()
+    const seed = new GameStore(path)
+    const session = seed.createStudyGame(DEFAULT_POSITION)
+    seed.close()
+    const database = new DatabaseSync(path)
+    database.exec(`
+      CREATE TRIGGER fail_background_review_completion
+      BEFORE UPDATE ON review_jobs
+      WHEN NEW.status = 'completed'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated background completion failure');
+      END;
+    `)
+    database.close()
+
+    const store = new GameStore(path)
+    const engine = new FakeStudyEngine()
+    const coordinator = new StudyCoordinator(store, engine)
+    coordinator.startReview(session.id, { multiPv: 1, depth: 12 })
+
+    engine.complete(10, 'h2e2')
+    await Promise.resolve()
+
+    expect(store.getReviewJob(session.id)).toMatchObject({
+      status: 'failed',
+      nextIndex: 1,
+      completedNodes: 1,
+      message: expect.stringContaining('simulated background completion failure'),
+    })
     coordinator.dispose()
     store.close()
   })

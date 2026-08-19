@@ -15,7 +15,7 @@ import {
 } from '../src/shared/ipc'
 import { EngineManager, EngineStartError } from './engine-manager'
 import { FrameAnalyzer } from '../src/shared/capture-analysis'
-import { assignDatasetSplit, renderCaptureReport, type CaptureSampleRecord } from '../src/shared/capture-report'
+import { assignDatasetSplit, type CaptureSampleRecord } from '../src/shared/capture-report'
 import { resolveSelectedSourceId } from '../src/shared/capture-source'
 import { XiangqiGame } from '../src/domain/game'
 import { ProfileStore } from './profile-store'
@@ -39,6 +39,8 @@ import { RecognitionCoordinator } from './recognition-coordinator'
 import { RecognitionWorkerError } from './recognition-worker'
 import { loadProfileRecognitionManifest } from './profile-model'
 import { completeRealtimeMutation, profileMutationGuard } from './ipc-policy'
+import { SerialTaskQueue } from './serial-task-queue'
+import { persistCaptureSampleRecord } from './capture-report-store'
 
 const sourceCache = new Map<string, Electron.DesktopCapturerSource>()
 let selectedSourceId: string | undefined
@@ -53,7 +55,8 @@ let recognitionStartupError: RecognitionWorkerError | undefined
 const engineManager = new EngineManager()
 const studyEngineManager = new EngineManager()
 let frameAnalyzer = new FrameAnalyzer()
-let captureSampleRecords: CaptureSampleRecord[] = []
+const profileLifecycleQueue = new SerialTaskQueue()
+const captureReportQueue = new SerialTaskQueue()
 
 studyEngineManager.onEvent((event) => {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -275,7 +278,7 @@ function broadcast(channel: string, value: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, value)
 }
 
-function startRealtimeTracking(input: RealtimeStartInput): IpcResult<RealtimeSnapshot> {
+function startRealtimeTrackingUnlocked(input: RealtimeStartInput): IpcResult<RealtimeSnapshot> {
   const activeProfile = profileStore?.getActive()
   if (!activeProfile) return failure('PROFILE_NOT_FOUND', 'Activate a valid Profile before starting tracking')
   if (!realtimeCoordinator) return failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true)
@@ -448,7 +451,7 @@ ipcMain.handle('profile:list', () => {
   }
 })
 
-ipcMain.handle('profile:save', async (_event, input: unknown) => {
+ipcMain.handle('profile:save', (_event, input: unknown) => profileLifecycleQueue.run(async () => {
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   const parsed = parseCaptureProfileInput(input)
   if (!parsed.ok) return failure('INVALID_INPUT', parsed.error)
@@ -475,9 +478,9 @@ ipcMain.handle('profile:save', async (_event, input: unknown) => {
       ? failure('INVALID_INPUT', error.message)
       : failure('PROFILE_STORAGE_ERROR', 'Unable to save the profile', true)
   }
-})
+}))
 
-ipcMain.handle('profile:delete', async (_event, id: unknown) => {
+ipcMain.handle('profile:delete', (_event, id: unknown) => profileLifecycleQueue.run(async () => {
   if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   if (profileStore.getActiveId() === id) {
@@ -496,7 +499,7 @@ ipcMain.handle('profile:delete', async (_event, id: unknown) => {
     if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
     return failure('PROFILE_STORAGE_ERROR', 'Unable to delete the profile', true)
   }
-})
+}))
 
 ipcMain.handle('profile:duplicate', (_event, id: unknown) => {
   if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
@@ -505,7 +508,7 @@ ipcMain.handle('profile:duplicate', (_event, id: unknown) => {
   catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to duplicate profile', true) }
 })
 
-ipcMain.handle('profile:set-enabled', async (_event, id: unknown, enabled: unknown) => {
+ipcMain.handle('profile:set-enabled', (_event, id: unknown, enabled: unknown) => profileLifecycleQueue.run(async () => {
   if (!isValidProfileId(id) || typeof enabled !== 'boolean') return failure('INVALID_INPUT', 'Profile enabled state is invalid')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   if (!enabled && profileStore.getActiveId() === id) {
@@ -523,7 +526,7 @@ ipcMain.handle('profile:set-enabled', async (_event, id: unknown, enabled: unkno
     if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
     return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to update profile', true)
   }
-})
+}))
 
 ipcMain.handle('profile:list-versions', (_event, id: unknown) => {
   if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
@@ -531,7 +534,7 @@ ipcMain.handle('profile:list-versions', (_event, id: unknown) => {
   return success(profileStore.listVersions(id))
 })
 
-ipcMain.handle('profile:rollback', async (_event, id: unknown, profileVersion: unknown) => {
+ipcMain.handle('profile:rollback', (_event, id: unknown, profileVersion: unknown) => profileLifecycleQueue.run(async () => {
   if (!isValidProfileId(id) || !Number.isInteger(profileVersion) || (profileVersion as number) < 1) return failure('INVALID_INPUT', 'Profile rollback target is invalid')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   const target = profileStore.getVersion(id, profileVersion as number)
@@ -555,7 +558,7 @@ ipcMain.handle('profile:rollback', async (_event, id: unknown, profileVersion: u
     if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
     return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to rollback profile', true)
   }
-})
+}))
 
 ipcMain.handle('profile:match', (_event, context: unknown) => {
   if (!isProfileMatchContext(context)) return failure('INVALID_INPUT', 'Profile match context is invalid')
@@ -563,7 +566,7 @@ ipcMain.handle('profile:match', (_event, context: unknown) => {
   return success(matchProfileCandidates(profileStore.list().profiles, context))
 })
 
-ipcMain.handle('profile:set-active', async (_event, id: unknown) => {
+ipcMain.handle('profile:set-active', (_event, id: unknown) => profileLifecycleQueue.run(async () => {
   if (id !== null && !isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
   const candidate = id === null ? null : profileStore.get(id)
@@ -580,7 +583,7 @@ ipcMain.handle('profile:set-active', async (_event, id: unknown) => {
     if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
     return failure('PROFILE_STORAGE_ERROR', 'Unable to activate the profile', true)
   }
-})
+}))
 
 ipcMain.handle('profile:get-active', () => {
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
@@ -684,12 +687,12 @@ ipcMain.handle('capture:analyze-frame', (_event, frame: unknown) => {
   }
 })
 
-ipcMain.handle('tracker:start', (_event, value: unknown) => {
+ipcMain.handle('tracker:start', (_event, value: unknown) => profileLifecycleQueue.run(async () => {
   const input = parseTrackerStartInput(value)
   if (!input) return failure('INVALID_INPUT', 'Tracker start input is invalid')
-  const result = startRealtimeTracking(input)
+  const result = startRealtimeTrackingUnlocked(input)
   return result.ok ? success(realtimeCoordinator!.getTrackerSnapshot()!) : result
-})
+}))
 
 ipcMain.handle('tracker:stop', () => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return success(null)
@@ -774,7 +777,11 @@ ipcMain.handle('recognition:scan', async (_event, value: unknown) => {
       ? recognitionSnapshotFailure(snapshot)
       : success(snapshot)
   } catch (error) {
-    return recognitionFailure(error)
+    return failure(
+      'RECOGNITION_INVALID_STATE',
+      error instanceof Error ? error.message : 'Recognition scan is not available',
+      true,
+    )
   }
 })
 
@@ -790,7 +797,7 @@ ipcMain.handle('recognition:correct', (_event, value: unknown) => {
   }
 })
 
-ipcMain.handle('recognition:commit', (_event, value: unknown) => {
+ipcMain.handle('recognition:commit', (_event, value: unknown) => profileLifecycleQueue.run(async () => {
   if (recognitionStartupError) return recognitionFailure(recognitionStartupError)
   if (!recognitionCoordinator) return failure('RECOGNITION_INVALID_STATE', 'Recognition service is unavailable', true)
   if (!value || typeof value !== 'object') return failure('INVALID_INPUT', 'Recognition commit input is invalid')
@@ -816,7 +823,7 @@ ipcMain.handle('recognition:commit', (_event, value: unknown) => {
         return failure('GAME_STORAGE_ERROR', realtime.monitoringMessage, true)
       }
     } else {
-      const result = startRealtimeTracking({
+      const result = startRealtimeTrackingUnlocked({
         fen: accepted.fen,
         orientation: accepted.orientation,
         ...(settings ? { settings } : {}),
@@ -830,12 +837,12 @@ ipcMain.handle('recognition:commit', (_event, value: unknown) => {
   } catch (error) {
     return failure('RECOGNITION_INVALID_STATE', error instanceof Error ? error.message : 'Recognition candidate cannot be committed')
   }
-})
+}))
 
-ipcMain.handle('realtime:start', (_event, value: unknown) => {
+ipcMain.handle('realtime:start', (_event, value: unknown) => profileLifecycleQueue.run(async () => {
   const input = parseRealtimeStartInput(value)
-  return input ? startRealtimeTracking(input) : failure('INVALID_INPUT', 'Realtime start input is invalid')
-})
+  return input ? startRealtimeTrackingUnlocked(input) : failure('INVALID_INPUT', 'Realtime start input is invalid')
+}))
 
 ipcMain.handle('realtime:pause', () => {
   if (!realtimeCoordinator?.getTrackerSnapshot()) return failure('TRACKER_INVALID_STATE', 'Tracker is not running')
@@ -1039,7 +1046,7 @@ ipcMain.handle('study:resume-review', (_event, gameId: unknown) => {
   }
 })
 
-ipcMain.handle('capture:save-sample', async (_event, sample: unknown) => {
+ipcMain.handle('capture:save-sample', (_event, sample: unknown) => captureReportQueue.run(async () => {
   if (!isPngSample(sample)) {
     return failure('INVALID_INPUT', 'Capture sample is invalid')
   }
@@ -1066,19 +1073,12 @@ ipcMain.handle('capture:save-sample', async (_event, sample: unknown) => {
       capturedAt: new Date().toISOString(),
       datasetSplit: assignDatasetSplit(sample.metadata.gameId, sample.metadata.dpi),
     }
-    const nextRecords = [...captureSampleRecords, record]
-    const metadataFileName = `${sampleId}.json`
-    const reportFileNames = { json: 'metrics.json', markdown: 'metrics.md' }
-    const report = renderCaptureReport(nextRecords)
-    await writeFile(join(directory, metadataFileName), `${JSON.stringify(record, null, 2)}\n`)
-    await writeFile(join(directory, reportFileNames.json), report.json)
-    await writeFile(join(directory, reportFileNames.markdown), report.markdown)
-    captureSampleRecords = nextRecords
-    return success({ fileName, metadataFileName, reportFileNames, summary: report.summary })
+    const report = await persistCaptureSampleRecord(directory, record)
+    return success({ fileName, ...report })
   } catch {
     return failure('CAPTURE_DENIED', 'Unable to save the capture sample', true)
   }
-})
+}))
 
 ipcMain.handle('analysis:start', (_event, input: unknown): IpcResult<{ analysisId: number }> => {
   if (!isAnalysisStartInput(input)) {

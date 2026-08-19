@@ -27,9 +27,14 @@ class FakeProcess extends EventEmitter implements EngineProcess {
 
 function harness() {
   const processes: FakeProcess[] = []
+  let readCount = 0
   const dependencies: EngineManagerDependencies = {
     exists: () => true,
-    readFile: () => Buffer.from('fixed-engine'),
+    readFile: () => {
+      readCount += 1
+      return Buffer.from('fixed-engine')
+    },
+    stat: () => ({ size: 12, mtimeMs: 1 }),
     spawn: () => {
       const process = new FakeProcess()
       processes.push(process)
@@ -43,7 +48,7 @@ function harness() {
   const events: AnalysisEvent[] = []
   manager.onEvent((event) => events.push(event))
   manager.selectEngine('E:\\engines\\pikafish.exe')
-  return { manager, events, processes }
+  return { manager, events, processes, getReadCount: () => readCount }
 }
 
 function finishHandshake(process: FakeProcess): void {
@@ -82,7 +87,7 @@ describe('EngineManager', () => {
   })
 
   it('drops old output across 100 rapid position switches', () => {
-    const { manager, events, processes } = harness()
+    const { manager, events, processes, getReadCount } = harness()
     manager.start({ fen: START_FEN, positionVersion: 0, multiPv: 3 })
     finishHandshake(processes[0])
 
@@ -98,6 +103,7 @@ describe('EngineManager', () => {
     expect(infoEvents.map((event) => event.value.positionVersion)).toEqual(
       Array.from({ length: 100 }, (_, index) => index + 1),
     )
+    expect(getReadCount()).toBe(1)
   })
 
   it('uses a configured depth and truncates illegal PV or bestmove output', () => {
@@ -153,6 +159,31 @@ describe('EngineManager', () => {
 
     processes[3].crash()
     expect(events.at(-1)).toMatchObject({ type: 'state', state: 'FAILED', positionVersion: 4 })
+  })
+
+  it('rehashes only when the executable file identity changes', () => {
+    let content = 'fixed-engine'
+    let mtimeMs = 1
+    const readFile = vi.fn(() => Buffer.from(content))
+    const dependencies: EngineManagerDependencies = {
+      exists: () => true,
+      readFile,
+      stat: () => ({ size: content.length, mtimeMs }),
+      spawn: () => new FakeProcess(),
+      setTimer: (callback, delay) => setTimeout(callback, delay),
+      clearTimer: clearTimeout,
+      now: Date.now,
+    }
+    const manager = new EngineManager(dependencies)
+    manager.selectEngine('E:\\engines\\pikafish.exe')
+    expect(readFile).toHaveBeenCalledTimes(1)
+
+    content = 'changed-engine'
+    mtimeMs = 2
+    expect(() => manager.start({ fen: START_FEN, positionVersion: 1, multiPv: 1 })).toThrow(
+      'Selected Pikafish executable changed after selection',
+    )
+    expect(readFile).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the restart budget after each replacement process completes its handshake', async () => {

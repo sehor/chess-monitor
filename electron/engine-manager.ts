@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute } from 'node:path'
 import { spawn } from 'node:child_process'
 import { parseBestMove, parseEngineInfo } from '../src/shared/engine-protocol'
@@ -51,6 +51,12 @@ export interface EngineDescriptor {
 
 interface EngineConfiguration extends EngineDescriptor {
   path: string
+  identity: EngineFileIdentity
+}
+
+interface EngineFileIdentity {
+  size: number
+  mtimeMs: number
 }
 
 export interface EngineProcess {
@@ -67,6 +73,7 @@ export interface EngineProcess {
 export interface EngineManagerDependencies {
   exists(path: string): boolean
   readFile(path: string): Uint8Array
+  stat(path: string): EngineFileIdentity
   spawn(path: string, cwd: string): EngineProcess
   setTimer(callback: () => void, delayMs: number): NodeJS.Timeout
   clearTimer(timer: NodeJS.Timeout): void
@@ -76,6 +83,10 @@ export interface EngineManagerDependencies {
 const defaultDependencies: EngineManagerDependencies = {
   exists: existsSync,
   readFile: readFileSync,
+  stat: (path) => {
+    const value = statSync(path)
+    return { size: value.size, mtimeMs: value.mtimeMs }
+  },
   spawn: (path, cwd) => spawn(path, [], { cwd, shell: false, windowsHide: true, stdio: 'pipe' }),
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: clearTimeout,
@@ -112,11 +123,12 @@ export class EngineManager {
       throw new EngineStartError('ENGINE_NOT_CONFIGURED', 'Selected Pikafish executable is unavailable', false)
     }
 
+    const identity = this.dependencies.stat(enginePath)
     const sha256 = this.hash(enginePath)
     this.stop()
     this.disposeProcess()
     this.resetRecoveryState()
-    this.engine = { path: enginePath, name: basename(enginePath), sha256 }
+    this.engine = { path: enginePath, name: basename(enginePath), sha256, identity }
     return { name: this.engine.name, sha256: this.engine.sha256 }
   }
 
@@ -188,9 +200,14 @@ export class EngineManager {
     if (!this.dependencies.exists(engine.path)) {
       throw new EngineStartError('ENGINE_NOT_CONFIGURED', 'Selected Pikafish executable is unavailable', false)
     }
+    const identity = this.dependencies.stat(engine.path)
+    if (identity.size === engine.identity.size && identity.mtimeMs === engine.identity.mtimeMs) {
+      return engine
+    }
     if (this.hash(engine.path) !== engine.sha256) {
       throw new EngineStartError('ENGINE_NOT_CONFIGURED', 'Selected Pikafish executable changed after selection', false)
     }
+    engine.identity = identity
     return engine
   }
 

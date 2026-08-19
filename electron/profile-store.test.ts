@@ -78,6 +78,78 @@ describe('ProfileStore', () => {
     store.close()
   })
 
+  it('rolls back disabling the active profile when clearing the active setting fails', async () => {
+    const path = await databasePath()
+    const seed = new ProfileStore(path)
+    const active = seed.save(input)
+    seed.setActive(active.id)
+    seed.close()
+    const database = new DatabaseSync(path)
+    database.exec(`
+      CREATE TRIGGER fail_active_profile_clear
+      BEFORE DELETE ON app_settings
+      WHEN OLD.key = 'active_profile_id'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated active setting failure');
+      END;
+    `)
+    database.close()
+
+    const store = new ProfileStore(path)
+    expect(() => store.setEnabled(active.id, false)).toThrow('simulated active setting failure')
+    expect(store.get(active.id)?.isEnabled).toBe(true)
+    expect(store.getActiveId()).toBe(active.id)
+    store.close()
+  })
+
+  it('rolls back deleting the active profile when clearing the active setting fails', async () => {
+    const path = await databasePath()
+    const seed = new ProfileStore(path)
+    const active = seed.save(input)
+    seed.setActive(active.id)
+    seed.close()
+    const database = new DatabaseSync(path)
+    database.exec(`
+      CREATE TRIGGER fail_active_profile_clear
+      BEFORE DELETE ON app_settings
+      WHEN OLD.key = 'active_profile_id'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated active setting failure');
+      END;
+    `)
+    database.close()
+
+    const store = new ProfileStore(path)
+    expect(() => store.delete(active.id)).toThrow('simulated active setting failure')
+    expect(store.get(active.id)).not.toBeNull()
+    expect(store.getActiveId()).toBe(active.id)
+    store.close()
+  })
+
+  it('rolls back the entire v1 to v2 migration when a row update fails', async () => {
+    const path = await databasePath()
+    const seed = new ProfileStore(path)
+    seed.save(input)
+    seed.close()
+    const database = new DatabaseSync(path)
+    database.exec(`
+      DROP TABLE profile_versions;
+      PRAGMA user_version = 1;
+      CREATE TRIGGER fail_profile_migration
+      BEFORE UPDATE OF payload ON profiles
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated migration failure');
+      END;
+    `)
+    database.close()
+
+    expect(() => new ProfileStore(path)).toThrow('simulated migration failure')
+    const inspected = new DatabaseSync(path)
+    expect((inspected.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1)
+    expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'profile_versions'").get()).toBeUndefined()
+    inspected.close()
+  })
+
   it('refuses a database created by a newer application schema', async () => {
     const path = await databasePath()
     const database = new DatabaseSync(path)
