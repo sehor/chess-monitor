@@ -125,6 +125,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .realtime-controls select, .realtime-controls input[type='number'] { min-height: 2.25rem; border: 1px solid #9ca79e; border-radius: 0.25rem; background: #fff; padding: 0.4rem; }
 .tracking-fen { display: grid; gap: 0.35rem; color: #56645b; font-size: 0.8rem; }
 .tracking-fen input { min-width: 0; border: 1px solid #9ca79e; border-radius: 0.25rem; padding: 0.5rem; font: 0.8rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.recognition-panel { margin-top: 1.25rem; border: 1px solid #d7ddd4; border-radius: 0.5rem; padding: 1rem; background: #fbfcfa; }
+.recognition-panel .action-row { align-items: end; margin-top: 0.75rem; }
+.recognition-panel .action-row label, .recognition-point-grid label { display: grid; gap: 0.35rem; color: #56645b; font-size: 0.8rem; }
+.recognition-panel select { min-height: 2.25rem; border: 1px solid #9ca79e; border-radius: 0.25rem; background: #fff; padding: 0.4rem; }
+.recognition-corrections { display: grid; gap: 0.75rem; margin-top: 1rem; }
+.recognition-point-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr)); gap: 0.5rem; }
+.recognition-panel .candidate-list code { flex: 1 1 100%; overflow-wrap: anywhere; }
 .candidate-list, .confirmed-list { display: grid; gap: 0.5rem; margin: 1rem 0 0; padding: 0; list-style: none; }
 .candidate-list li, .confirmed-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; border-top: 1px solid #d7ddd4; padding-top: 0.5rem; }
 .candidate-list span, .confirmed-list small { color: #56645b; }

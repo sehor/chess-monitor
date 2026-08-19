@@ -11,6 +11,11 @@ export const IPC_ERROR_CODES = [
   'PROFILE_STORAGE_ERROR',
   'TRACKER_INVALID_STATE',
   'GAME_STORAGE_ERROR',
+  'RECOGNITION_MODEL_ERROR',
+  'RECOGNITION_RUNTIME_ERROR',
+  'RECOGNITION_TIMEOUT',
+  'RECOGNITION_FAILED',
+  'RECOGNITION_INVALID_STATE',
 ] as const
 
 export type IpcErrorCode = (typeof IPC_ERROR_CODES)[number]
@@ -55,7 +60,8 @@ export interface CaptureFrameInput {
 }
 
 import type { BoardTrackerEvent, BoardTrackerSnapshot, MoveConfirmedEvent, TrackerOptions, TrackerState } from '../domain/board-tracker'
-import type { Orientation, PositionSnapshot } from '../domain/position'
+import type { Orientation, PositionSnapshot, Side } from '../domain/position'
+import type { RecognitionClass, RecognitionCorrection, RecognitionEvaluation } from '../domain/recognition'
 
 export interface TrackerStartInput {
   fen: string
@@ -206,6 +212,50 @@ export interface RealtimeSnapshot {
 export interface RealtimeStartInput extends TrackerStartInput {
   settings?: Partial<RealtimeSettings>
 }
+
+export type RecognitionState =
+  | 'IDLE'
+  | 'READY_FOR_SCAN'
+  | 'SCANNING'
+  | 'READY'
+  | 'NEEDS_CORRECTION'
+  | 'REJECTED'
+  | 'ERROR'
+  | 'COMMITTED'
+
+export interface RecognitionSnapshot {
+  state: RecognitionState
+  message: string
+  bufferedFrameCount: number
+  modelVersion: string | null
+  evaluation: RecognitionEvaluation | null
+  error: { code: string; retryable: boolean } | null
+}
+
+export interface RecognitionScanInput {
+  orientation: Orientation
+  sideToMove: Side
+}
+
+export interface RecognitionCommitInput {
+  fen: string
+  settings?: Partial<RealtimeSettings>
+}
+
+export interface RecognitionCommitResult {
+  recognition: RecognitionSnapshot
+  realtime: RealtimeSnapshot
+}
+
+export interface RecognitionApi {
+  scan(input: RecognitionScanInput): Promise<IpcResult<RecognitionSnapshot>>
+  correct(corrections: RecognitionCorrection[]): Promise<IpcResult<RecognitionSnapshot>>
+  commit(input: RecognitionCommitInput): Promise<IpcResult<RecognitionCommitResult>>
+  reset(): Promise<IpcResult<RecognitionSnapshot>>
+  getState(): Promise<IpcResult<RecognitionSnapshot>>
+}
+
+export { type RecognitionClass }
 
 export interface RealtimeApi {
   start(input: RealtimeStartInput): Promise<IpcResult<RealtimeSnapshot>>

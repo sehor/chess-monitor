@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AnalysisApi, CaptureApi, ProfileApi, RealtimeApi, TrackerApi } from './shared/ipc'
+import type { AnalysisApi, CaptureApi, ProfileApi, RecognitionApi, RealtimeApi, TrackerApi } from './shared/ipc'
 
 declare global {
   interface Window {
@@ -10,6 +10,7 @@ declare global {
       analysis: AnalysisApi
       profiles: ProfileApi
       tracker: TrackerApi
+      recognition: RecognitionApi
       realtime: RealtimeApi
     }
   }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { DEFAULT_POSITION } from '@west-shell/xiangqi.js'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { Orientation } from '../domain/position'
-import type { IpcResult, RealtimeSnapshot } from '../shared/ipc'
+import type { Orientation, Side } from '../domain/position'
+import { RECOGNITION_CLASSES, type RecognitionClass } from '../domain/recognition'
+import type { IpcResult, RecognitionSnapshot, RealtimeSnapshot } from '../shared/ipc'
 import RealtimeAnalysisPanel from './RealtimeAnalysisPanel.vue'
 
 const props = defineProps<{ ready: boolean; orientation: Orientation }>()
@@ -14,6 +15,10 @@ const depth = ref(16)
 const isBusy = ref(false)
 const errorMessage = ref<string | null>(null)
 const statusMessage = ref<string | null>(null)
+const recognition = ref<RecognitionSnapshot | null>(null)
+const recognitionSide = ref<Side>('red')
+const recognitionCorrections = ref<Record<number, RecognitionClass>>({})
+const recognitionBusy = ref(false)
 let removeListener: (() => void) | undefined
 
 const isActive = computed(() => Boolean(snapshot.value?.gameId))
@@ -21,6 +26,9 @@ const candidates = computed(() => {
   const state = snapshot.value?.trackerState
   return state && (state.status === 'MOVE_CANDIDATE' || state.status === 'DESYNC') ? state.candidates : []
 })
+const recognitionSideLocked = computed(() => snapshot.value?.position?.sideToMove ?? null)
+const recognitionCandidates = computed(() => recognition.value?.evaluation?.candidates ?? [])
+const lowConfidencePoints = computed(() => recognition.value?.evaluation?.lowConfidencePoints ?? [])
 
 function accept(result: IpcResult<RealtimeSnapshot>, message?: string): void {
   if (!result.ok) {
@@ -57,6 +65,63 @@ async function resync(): Promise<void> {
   isBusy.value = true
   accept(await window.chessMonitor.realtime.resync(fen.value), '已提交重同步局面。')
   isBusy.value = false
+}
+
+function acceptRecognition(result: IpcResult<RecognitionSnapshot>): boolean {
+  if (!result.ok) {
+    errorMessage.value = result.error.message
+    return false
+  }
+  recognition.value = result.value
+  errorMessage.value = null
+  recognitionCorrections.value = {}
+  const best = result.value.evaluation?.candidates[0]
+  if (best) {
+    for (const point of result.value.evaluation?.lowConfidencePoints ?? []) {
+      recognitionCorrections.value[point] = best.points[point]?.label ?? '_'
+    }
+  }
+  return true
+}
+
+async function scanRecognition(): Promise<void> {
+  recognitionBusy.value = true
+  const result = await window.chessMonitor.recognition.scan({
+    orientation: snapshot.value?.position?.orientation ?? props.orientation,
+    sideToMove: recognitionSideLocked.value ?? recognitionSide.value,
+  })
+  if (result.ok && acceptRecognition(result)) statusMessage.value = result.value.message
+  recognitionBusy.value = false
+}
+
+async function applyRecognitionCorrections(): Promise<void> {
+  recognitionBusy.value = true
+  const result = await window.chessMonitor.recognition.correct(
+    lowConfidencePoints.value.map((point) => ({
+      point,
+      label: recognitionCorrections.value[point] ?? '_',
+    })),
+  )
+  if (result.ok && acceptRecognition(result)) statusMessage.value = result.value.message
+  recognitionBusy.value = false
+}
+
+async function commitRecognition(candidateFen: string): Promise<void> {
+  recognitionBusy.value = true
+  const result = await window.chessMonitor.recognition.commit({
+    fen: candidateFen,
+    settings: { multiPv: multiPv.value, depth: depth.value },
+  })
+  if (!result.ok) {
+    errorMessage.value = result.error.message
+  } else {
+    recognition.value = result.value.recognition
+    snapshot.value = result.value.realtime
+    if (result.value.realtime.position) fen.value = result.value.realtime.position.fen
+    errorMessage.value = null
+    statusMessage.value = result.value.recognition.message
+  }
+  recognitionBusy.value = false
 }
 
 async function confirmCandidate(move: string): Promise<void> {
@@ -103,6 +168,9 @@ onMounted(async () => {
     snapshot.value = value
     if (value.position) fen.value = value.position.fen
   })
+  const recognitionResult = await window.chessMonitor.recognition.getState()
+  if (recognitionResult.ok) recognition.value = recognitionResult.value
+
   const result = await window.chessMonitor.realtime.getState()
   if (result.ok) {
     snapshot.value = result.value
@@ -118,8 +186,8 @@ onBeforeUnmount(() => removeListener?.())
   <section class="tracking-panel" aria-labelledby="tracking-title">
     <div class="section-heading">
       <div>
-        <p class="eyebrow">阶段 4 · 实时引擎闭环</p>
-        <h2 id="tracking-title">棋盘跟踪与 Pikafish</h2>
+        <p class="eyebrow">阶段 5 · 完整识别与失步恢复</p>
+        <h2 id="tracking-title">棋盘识别、跟踪与 Pikafish</h2>
       </div>
       <span class="status-pill" :class="{ warning: snapshot?.monitoringState === 'DESYNC' || snapshot?.monitoringState === 'ERROR' }">
         {{ snapshot?.monitoringState ?? 'IDLE' }}
@@ -158,6 +226,59 @@ onBeforeUnmount(() => removeListener?.())
     <p v-if="snapshot" class="status-message" role="status">{{ snapshot.monitoringMessage }}</p>
     <p v-if="errorMessage" class="error-message" role="alert">{{ errorMessage }}</p>
     <p v-if="statusMessage" class="status-message" role="status">{{ statusMessage }}</p>
+
+    <section class="recognition-panel" aria-labelledby="recognition-title">
+      <div class="section-heading compact-heading">
+        <div>
+          <p class="eyebrow">Recognition Worker</p>
+          <h3 id="recognition-title">完整棋盘识别</h3>
+        </div>
+        <span class="status-pill" :class="{ warning: recognition?.state === 'ERROR' || recognition?.state === 'REJECTED' || recognition?.state === 'NEEDS_CORRECTION' }">
+          {{ recognition?.state ?? 'IDLE' }}
+        </span>
+      </div>
+      <p class="status-message">
+        {{ recognition?.message ?? '等待稳定棋盘帧' }} · 稳定帧 {{ recognition?.bufferedFrameCount ?? 0 }}/2
+        <template v-if="recognition?.modelVersion"> · 模型 {{ recognition.modelVersion }}</template>
+      </p>
+      <div class="action-row">
+        <label for="recognition-side">行棋方
+          <select id="recognition-side" v-model="recognitionSide" :disabled="Boolean(recognitionSideLocked)">
+            <option value="red">红方</option>
+            <option value="black">黑方</option>
+          </select>
+        </label>
+        <button type="button" class="primary-action" :disabled="!ready || recognitionBusy" @click="scanRecognition">
+          {{ isActive ? '完整重扫' : '识别当前局面' }}
+        </button>
+      </div>
+
+      <div v-if="lowConfidencePoints.length" class="recognition-corrections">
+        <p class="status-message">低置信度交叉点：{{ lowConfidencePoints.join(', ') }}。确认这些点后重新校验候选。</p>
+        <div class="recognition-point-grid">
+          <label v-for="point in lowConfidencePoints" :key="point" :for="`recognition-point-${point}`">
+            #{{ point }}
+            <select :id="`recognition-point-${point}`" v-model="recognitionCorrections[point]">
+              <option v-for="label in RECOGNITION_CLASSES" :key="label" :value="label">{{ label === '_' ? '空' : label }}</option>
+            </select>
+          </label>
+        </div>
+        <button type="button" class="secondary-action" :disabled="recognitionBusy" @click="applyRecognitionCorrections">应用修正并重新校验</button>
+      </div>
+
+      <ol v-if="recognitionCandidates.length" class="candidate-list" aria-label="识别候选局面">
+        <li v-for="candidate in recognitionCandidates" :key="candidate.fen">
+          <code>{{ candidate.fen }}</code>
+          <span>整盘 {{ candidate.boardConfidence.toFixed(4) }} · 最低点 {{ candidate.minimumConfidence.toFixed(4) }}</span>
+          <button
+            type="button"
+            class="secondary-action"
+            :disabled="recognition?.state !== 'READY' || recognitionBusy"
+            @click="commitRecognition(candidate.fen)"
+          >安全提交</button>
+        </li>
+      </ol>
+    </section>
 
     <ol v-if="candidates.length" class="candidate-list" aria-label="候选着法">
       <li v-for="candidate in candidates" :key="candidate.move">

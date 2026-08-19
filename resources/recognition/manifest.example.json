@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "modelVersion": "replace-with-validated-model-version",
+  "modelFile": "pieces.onnx",
+  "modelSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "classes": [
+    "_",
+    "R",
+    "N",
+    "B",
+    "A",
+    "K",
+    "C",
+    "P",
+    "r",
+    "n",
+    "b",
+    "a",
+    "k",
+    "c",
+    "p"
+  ],
+  "input": {
+    "width": 32,
+    "height": 32,
+    "channels": 3,
+    "layout": "NCHW",
+    "colorSpace": "RGB",
+    "scale": 0.00392156862745098,
+    "mean": [0, 0, 0],
+    "std": [1, 1, 1]
+  }
+}

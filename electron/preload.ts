@@ -7,6 +7,9 @@ import type {
   CaptureFrameInput,
   CaptureSampleInput,
   ProfileApi,
+  RecognitionApi,
+  RecognitionCommitInput,
+  RecognitionScanInput,
   RealtimeApi,
   RealtimeSettings,
   RealtimeSnapshot,
@@ -16,6 +19,7 @@ import type {
 } from '../src/shared/ipc'
 import type { CaptureProfileInput } from '../src/shared/profile'
 import type { BoardTrackerEvent } from '../src/domain/board-tracker'
+import type { RecognitionCorrection } from '../src/domain/recognition'
 
 const capture: CaptureApi = Object.freeze({
   listSources: () => ipcRenderer.invoke('capture:list-sources'),
@@ -62,6 +66,14 @@ const tracker: TrackerApi = Object.freeze({
   },
 })
 
+const recognition: RecognitionApi = Object.freeze({
+  scan: (input: RecognitionScanInput) => ipcRenderer.invoke('recognition:scan', input),
+  correct: (corrections: RecognitionCorrection[]) => ipcRenderer.invoke('recognition:correct', corrections),
+  commit: (input: RecognitionCommitInput) => ipcRenderer.invoke('recognition:commit', input),
+  reset: () => ipcRenderer.invoke('recognition:reset'),
+  getState: () => ipcRenderer.invoke('recognition:get-state'),
+})
+
 const realtime: RealtimeApi = Object.freeze({
   start: (input: RealtimeStartInput) => ipcRenderer.invoke('realtime:start', input),
   pause: () => ipcRenderer.invoke('realtime:pause'),
@@ -86,5 +98,6 @@ contextBridge.exposeInMainWorld('chessMonitor', {
   analysis,
   profiles,
   tracker,
+  recognition,
   realtime,
 })

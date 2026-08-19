@@ -22,9 +22,12 @@ import { ProfileStore } from './profile-store'
 import type { CaptureSourceKind } from '../src/shared/profile'
 import { evaluateProfileCompatibility } from '../src/shared/profile'
 import type { TrackerOptions } from '../src/domain/board-tracker'
-import { parseFen, type Orientation } from '../src/domain/position'
+import { parseFen, type Orientation, type Side } from '../src/domain/position'
+import type { RecognitionCorrection } from '../src/domain/recognition'
 import { GameStore } from './game-store'
 import { RealtimeCoordinator } from './realtime-coordinator'
+import { RecognitionCoordinator } from './recognition-coordinator'
+import { loadRecognitionManifest, RecognitionWorkerError } from './recognition-worker'
 
 const sourceCache = new Map<string, Electron.DesktopCapturerSource>()
 let selectedSourceId: string | undefined
@@ -33,6 +36,8 @@ let selectedSourceKind: CaptureSourceKind | undefined
 let profileStore: ProfileStore | undefined
 let gameStore: GameStore | undefined
 let realtimeCoordinator: RealtimeCoordinator | undefined
+let recognitionCoordinator: RecognitionCoordinator | undefined
+let recognitionStartupError: RecognitionWorkerError | undefined
 const engineManager = new EngineManager()
 let frameAnalyzer = new FrameAnalyzer()
 let captureSampleRecords: CaptureSampleRecord[] = []
@@ -85,6 +90,40 @@ function isAnalysisStartInput(value: unknown): value is { fen: string; positionV
       (candidate.depth as number) <= 128
     ))
   )
+}
+
+function parseRecognitionScanInput(value: unknown): { orientation: Orientation; sideToMove: Side } | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Record<string, unknown>
+  if (!['red-bottom', 'black-bottom'].includes(candidate.orientation as string)) return null
+  if (!['red', 'black'].includes(candidate.sideToMove as string)) return null
+  return { orientation: candidate.orientation as Orientation, sideToMove: candidate.sideToMove as Side }
+}
+
+function parseRecognitionCorrections(value: unknown): RecognitionCorrection[] | null {
+  if (!Array.isArray(value) || value.length > 90) return null
+  const corrections: RecognitionCorrection[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null
+    const candidate = item as Record<string, unknown>
+    if (!Number.isInteger(candidate.point) || (candidate.point as number) < 0 || (candidate.point as number) >= 90) return null
+    if (typeof candidate.label !== 'string' || !['_', 'R', 'N', 'B', 'A', 'K', 'C', 'P', 'r', 'n', 'b', 'a', 'k', 'c', 'p'].includes(candidate.label)) return null
+    corrections.push({ point: candidate.point as number, label: candidate.label as RecognitionCorrection['label'] })
+  }
+  if (new Set(corrections.map((item) => item.point)).size !== corrections.length) return null
+  return corrections
+}
+
+function recognitionFailure(error: unknown) {
+  if (error instanceof RecognitionWorkerError) {
+    if (['MODEL_MISSING', 'MODEL_HASH_MISMATCH', 'MODEL_MANIFEST_INVALID', 'CLASS_MAPPING_MISMATCH'].includes(error.code)) {
+      return failure('RECOGNITION_MODEL_ERROR', error.message, error.retryable)
+    }
+    if (error.code === 'RUNTIME_MISSING') return failure('RECOGNITION_RUNTIME_ERROR', error.message, error.retryable)
+    if (error.code === 'WORKER_TIMEOUT') return failure('RECOGNITION_TIMEOUT', error.message, true)
+    return failure('RECOGNITION_FAILED', error.message, error.retryable)
+  }
+  return failure('RECOGNITION_FAILED', error instanceof Error ? error.message : 'Recognition failed', true)
 }
 
 function parseRealtimeSettings(value: unknown): RealtimeSettings | null {
@@ -366,25 +405,28 @@ ipcMain.handle('capture:analyze-frame', (_event, frame: unknown) => {
 
   try {
     const analysis = frameAnalyzer.analyze(frame)
+    const activeProfile = profileStore?.getActive()
+    const sourceValid = Boolean(selectedSourceId && sourceCache.has(selectedSourceId))
+    const sourceMatchesProfile = Boolean(
+      activeProfile &&
+      activeProfile.source.name === selectedSourceName &&
+      activeProfile.source.kind === selectedSourceKind,
+    )
+    const compatibility = activeProfile
+      ? evaluateProfileCompatibility(activeProfile, {
+          width: frame.width,
+          height: frame.height,
+          dpi: frame.dpi ?? activeProfile.frame.dpi,
+        })
+      : { state: 'recalibration-required' as const }
+    const profileValid = sourceMatchesProfile && compatibility.state === 'compatible'
+
+    recognitionCoordinator?.capture(frame, sourceValid && profileValid && analysis.isStable)
     if (realtimeCoordinator?.getTrackerSnapshot()) {
-      const activeProfile = profileStore?.getActive()
-      const sourceValid = Boolean(selectedSourceId && sourceCache.has(selectedSourceId))
-      const sourceMatchesProfile = Boolean(
-        activeProfile &&
-        activeProfile.source.name === selectedSourceName &&
-        activeProfile.source.kind === selectedSourceKind,
-      )
-      const compatibility = activeProfile
-        ? evaluateProfileCompatibility(activeProfile, {
-            width: frame.width,
-            height: frame.height,
-            dpi: frame.dpi ?? activeProfile.frame.dpi,
-          })
-        : { state: 'recalibration-required' as const }
       realtimeCoordinator.observe({
         capturedAt: Date.now(),
         sourceValid,
-        profileValid: sourceMatchesProfile && compatibility.state === 'compatible',
+        profileValid,
         analysis,
       })
     }
@@ -456,6 +498,91 @@ ipcMain.handle('tracker:export-diagnostics', async () => {
     return success({ fileName })
   } catch {
     return failure('PROFILE_STORAGE_ERROR', 'Unable to export tracker diagnostics', true)
+  }
+})
+
+ipcMain.handle('recognition:get-state', () => {
+  if (recognitionStartupError) return recognitionFailure(recognitionStartupError)
+  if (!recognitionCoordinator) return failure('RECOGNITION_INVALID_STATE', 'Recognition service is unavailable', true)
+  return success(recognitionCoordinator.snapshot())
+})
+
+ipcMain.handle('recognition:reset', () => {
+  if (recognitionStartupError) return recognitionFailure(recognitionStartupError)
+  if (!recognitionCoordinator) return failure('RECOGNITION_INVALID_STATE', 'Recognition service is unavailable', true)
+  return success(recognitionCoordinator.reset())
+})
+
+ipcMain.handle('recognition:scan', async (_event, value: unknown) => {
+  if (recognitionStartupError) return recognitionFailure(recognitionStartupError)
+  if (!recognitionCoordinator) return failure('RECOGNITION_INVALID_STATE', 'Recognition service is unavailable', true)
+  const input = parseRecognitionScanInput(value)
+  if (!input) return failure('INVALID_INPUT', 'Recognition scan input is invalid')
+  const current = realtimeCoordinator?.getTrackerSnapshot()?.position
+  if (current && (current.orientation !== input.orientation || current.sideToMove !== input.sideToMove)) {
+    return failure('INVALID_INPUT', 'Recognition scan must preserve the current orientation and side to move')
+  }
+  try {
+    const snapshot = await recognitionCoordinator.scan(input)
+    return snapshot.state === 'ERROR'
+      ? failure('RECOGNITION_FAILED', snapshot.message, snapshot.error?.retryable ?? true)
+      : success(snapshot)
+  } catch (error) {
+    return recognitionFailure(error)
+  }
+})
+
+ipcMain.handle('recognition:correct', (_event, value: unknown) => {
+  if (recognitionStartupError) return recognitionFailure(recognitionStartupError)
+  if (!recognitionCoordinator) return failure('RECOGNITION_INVALID_STATE', 'Recognition service is unavailable', true)
+  const corrections = parseRecognitionCorrections(value)
+  if (!corrections) return failure('INVALID_INPUT', 'Recognition corrections are invalid')
+  try {
+    return success(recognitionCoordinator.correct(corrections))
+  } catch (error) {
+    return failure('RECOGNITION_INVALID_STATE', error instanceof Error ? error.message : 'Recognition correction failed')
+  }
+})
+
+ipcMain.handle('recognition:commit', (_event, value: unknown) => {
+  if (recognitionStartupError) return recognitionFailure(recognitionStartupError)
+  if (!recognitionCoordinator) return failure('RECOGNITION_INVALID_STATE', 'Recognition service is unavailable', true)
+  if (!value || typeof value !== 'object') return failure('INVALID_INPUT', 'Recognition commit input is invalid')
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.fen !== 'string' || candidate.fen.length < 1 || candidate.fen.length > 512) {
+    return failure('INVALID_INPUT', 'Recognition candidate FEN is invalid')
+  }
+  let settings: RealtimeSettings | undefined
+  if (candidate.settings !== undefined) {
+    if (!candidate.settings || typeof candidate.settings !== 'object' || Array.isArray(candidate.settings)) {
+      return failure('INVALID_INPUT', 'Recognition commit settings are invalid')
+    }
+    settings = parseRealtimeSettings({ multiPv: 3, depth: 16, ...(candidate.settings as Record<string, unknown>) }) ?? undefined
+    if (!settings) return failure('INVALID_INPUT', 'Recognition commit settings are invalid')
+  }
+
+  try {
+    const accepted = recognitionCoordinator.accept(candidate.fen)
+    let realtime: RealtimeSnapshot
+    if (realtimeCoordinator?.getTrackerSnapshot()) {
+      realtime = realtimeCoordinator.resync(accepted.fen)
+      if (realtime.monitoringState === 'ERROR') {
+        return failure('GAME_STORAGE_ERROR', realtime.monitoringMessage, true)
+      }
+    } else {
+      const result = startRealtimeTracking({
+        fen: accepted.fen,
+        orientation: accepted.orientation,
+        ...(settings ? { settings } : {}),
+      })
+      if (!result.ok) return result
+      realtime = result.value
+    }
+    const recognition = recognitionCoordinator.markCommitted()
+    frameAnalyzer.reset()
+    return success({ recognition, realtime })
+  } catch (error) {
+    return failure('RECOGNITION_INVALID_STATE', error instanceof Error ? error.message : 'Recognition candidate cannot be committed')
   }
 })
 
@@ -686,7 +813,7 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   try {
     profileStore = new ProfileStore(join(app.getPath('userData'), 'profiles.sqlite3'))
     const activeProfile = profileStore.getActive()
@@ -695,6 +822,20 @@ app.whenReady().then(() => {
     configureFrameAnalyzer(activeProfile)
   } catch (error) {
     console.error('Unable to initialize profile storage', error)
+  }
+
+  try {
+    const manifestPath = app.isPackaged
+      ? join(process.resourcesPath, 'recognition', 'manifest.json')
+      : join(process.cwd(), 'resources', 'recognition', 'manifest.json')
+    const manifest = await loadRecognitionManifest(manifestPath)
+    recognitionCoordinator = new RecognitionCoordinator({ manifest, timeoutMs: 1_500 })
+    recognitionStartupError = undefined
+  } catch (error) {
+    recognitionStartupError = error instanceof RecognitionWorkerError
+      ? error
+      : new RecognitionWorkerError('MODEL_MANIFEST_INVALID', error instanceof Error ? error.message : 'Recognition initialization failed', true)
+    console.warn('Recognition service is unavailable', recognitionStartupError.message)
   }
 
   try {
@@ -727,6 +868,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  void recognitionCoordinator?.dispose()
+  recognitionCoordinator = undefined
   realtimeCoordinator?.dispose()
   realtimeCoordinator = undefined
   gameStore?.close()
