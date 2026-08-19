@@ -85,6 +85,8 @@ export interface TrackerApi {
 
 export interface CaptureAnalysis {
   isStable: boolean
+  /** True when board-wide change makes the frame unsafe as move evidence. */
+  isObscured?: boolean
   stableFrameCount: number
   changedPointCount: number
   medianScore: number

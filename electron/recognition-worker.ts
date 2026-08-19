@@ -450,8 +450,9 @@ export class RecognitionWorkerManager {
           )), this.timeoutMs)
         }),
       ])
+      const probabilities = softmaxRows(rows)
       this.failureTimestamps = []
-      return softmaxRows(rows)
+      return probabilities
     } catch (error) {
       if (error instanceof RecognitionWorkerError && error.code === 'WORKER_TIMEOUT') {
         // Termination is the cancellation boundary for an ONNX inference that no

@@ -1,26 +1,11 @@
 import { deriveIntersectionPoints, getSampleBounds, type Point } from '../lib/calibration'
+import type { CaptureAnalysis, CaptureFrameInput } from './ipc'
+
+export type { CaptureAnalysis, CaptureFrameInput } from './ipc'
 
 export const MAX_CAPTURE_FRAME_BYTES = 16 * 1024 * 1024
 export const MAX_CAPTURE_FRAME_DIMENSION = 2048
 const NORMALIZED_ROI_SIZE = 32
-
-export interface CaptureFrameInput {
-  pixels: Uint8Array | Uint8ClampedArray
-  width: number
-  height: number
-  topLeft: Point
-  bottomRight: Point
-  roiScale?: number
-}
-
-export interface CaptureAnalysis {
-  isStable: boolean
-  isObscured?: boolean
-  stableFrameCount: number
-  changedPointCount: number
-  medianScore: number
-  pointScores: number[]
-}
 
 export interface FrameAnalyzerOptions {
   lowThreshold?: number
@@ -95,7 +80,10 @@ function validateFrame(frame: CaptureFrameInput): void {
 /** Retains only normalized 32×32 grayscale ROIs for the 90 intersections. */
 export class FrameAnalyzer {
   private previousSamples: Float32Array[] | undefined
+  private occlusionReferenceSamples: Float32Array[] | undefined
   private stableFrameCount = 0
+  private unchangedFrameCount = 0
+  private wasObscured = false
   private readonly lowThreshold: number
   private readonly highThreshold: number
   private readonly stableFrameRequirement: number
@@ -132,7 +120,9 @@ export class FrameAnalyzer {
 
     if (!this.previousSamples) {
       this.previousSamples = samples
+      this.occlusionReferenceSamples = samples
       this.stableFrameCount = 1
+      this.unchangedFrameCount = 1
       return {
         isStable: this.stableFrameRequirement === 1,
         isObscured: false,
@@ -143,24 +133,34 @@ export class FrameAnalyzer {
       }
     }
 
-    const pointScores = samples.map((sample, index) => compensatedDifference(sample, this.previousSamples![index]))
-    const medianScore = median(pointScores)
-    const changedPointCount = pointScores.filter((score) => score >= this.highThreshold).length
-    const isObscured = changedPointCount >= this.freezeChangedPointThreshold
+    const previousPointScores = samples.map((sample, index) => compensatedDifference(sample, this.previousSamples![index]))
+    const referencePointScores = samples.map((sample, index) => compensatedDifference(sample, this.occlusionReferenceSamples![index]))
+    const referenceChangedPointCount = referencePointScores.filter((score) => score >= this.highThreshold).length
+    const isObscured = referenceChangedPointCount >= this.freezeChangedPointThreshold
     if (isObscured) {
       this.stableFrameCount = 0
+      this.unchangedFrameCount = 0
+      this.wasObscured = true
       return {
         isStable: false,
         isObscured: true,
         stableFrameCount: 0,
-        changedPointCount,
-        medianScore,
-        pointScores,
+        changedPointCount: referenceChangedPointCount,
+        medianScore: median(referencePointScores),
+        pointScores: referencePointScores,
       }
     }
 
+    const pointScores = this.wasObscured ? referencePointScores : previousPointScores
+    const medianScore = median(pointScores)
+    const changedPointCount = pointScores.filter((score) => score >= this.highThreshold).length
     this.previousSamples = samples
+    this.wasObscured = false
     this.stableFrameCount = medianScore < this.lowThreshold ? this.stableFrameCount + 1 : 0
+    this.unchangedFrameCount = changedPointCount === 0 ? this.unchangedFrameCount + 1 : 0
+    if (this.unchangedFrameCount >= this.stableFrameRequirement) {
+      this.occlusionReferenceSamples = samples
+    }
     return {
       isStable: this.stableFrameCount >= this.stableFrameRequirement,
       isObscured: false,
@@ -173,6 +173,9 @@ export class FrameAnalyzer {
 
   reset(): void {
     this.previousSamples = undefined
+    this.occlusionReferenceSamples = undefined
     this.stableFrameCount = 0
+    this.unchangedFrameCount = 0
+    this.wasObscured = false
   }
 }

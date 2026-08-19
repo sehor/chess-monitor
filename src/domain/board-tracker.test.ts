@@ -98,6 +98,21 @@ describe('BoardTracker', () => {
     expect(tracker.snapshot()).toEqual(before)
   })
 
+  it('ignores duplicate observations with the same capture timestamp', () => {
+    const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom')
+    tracker.observe({ capturedAt: 100, sourceValid: true, profileValid: true, analysis: analysis() })
+    const before = tracker.snapshot()
+    const events = tracker.observe({ capturedAt: 100, sourceValid: true, profileValid: true, analysis: analysis({
+      isStable: false,
+      stableFrameCount: 0,
+      changedPointCount: 2,
+      pointScores: moveScores('a3a4'),
+    }) })
+
+    expect(events).toEqual([])
+    expect(tracker.snapshot()).toEqual(before)
+  })
+
   it('enters DESYNC instead of confirming across an excessive frame gap', () => {
     const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom', { maximumFrameGapMs: 500 })
     tracker.observe({ capturedAt: 0, sourceValid: true, profileValid: true, analysis: analysis() })
@@ -114,6 +129,50 @@ describe('BoardTracker', () => {
       state: expect.objectContaining({ status: 'DESYNC' }),
     })])
     expect(tracker.snapshot().confirmedMoveCount).toBe(0)
+  })
+
+  it('enters DESYNC when the first frame after a stable capture gap is uncertain', () => {
+    const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom', { maximumFrameGapMs: 500 })
+    tracker.observe({ capturedAt: 0, sourceValid: true, profileValid: true, analysis: analysis() })
+    const events = tracker.observe({ capturedAt: 900, sourceValid: true, profileValid: true, analysis: analysis({
+      isStable: false,
+      stableFrameCount: 0,
+      changedPointCount: 2,
+      pointScores: moveScores('a3a4'),
+    }) })
+
+    expect(events).toEqual([expect.objectContaining({
+      type: 'state',
+      state: expect.objectContaining({ status: 'DESYNC' }),
+    })])
+    expect(tracker.snapshot().confirmedMoveCount).toBe(0)
+  })
+
+  it('discards obscured-frame evidence and waits for a clean baseline', () => {
+    const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom')
+    tracker.observe({ capturedAt: 0, sourceValid: true, profileValid: true, analysis: analysis() })
+    const obscuredScores = Array(90).fill(0.08)
+    const [origin, destination] = expectedMovePoints('a3a4', 'red-bottom')
+    obscuredScores[origin] = 1
+    obscuredScores[destination] = 1
+
+    const events = tracker.observe({ capturedAt: 100, sourceValid: true, profileValid: true, analysis: analysis({
+      isStable: false,
+      isObscured: true,
+      stableFrameCount: 0,
+      changedPointCount: 90,
+      pointScores: obscuredScores,
+    }) })
+    expect(events).toEqual([expect.objectContaining({
+      type: 'state',
+      state: expect.objectContaining({ status: 'RESCANNING' }),
+    })])
+
+    tracker.observe({ capturedAt: 400, sourceValid: true, profileValid: true, analysis: analysis() })
+    expect(tracker.snapshot()).toMatchObject({
+      state: { status: 'STABLE' },
+      confirmedMoveCount: 0,
+    })
   })
 
   it('refuses a dropped endpoint instead of silently confirming', () => {

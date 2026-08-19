@@ -5,9 +5,9 @@ function frame(fill = 0): Uint8ClampedArray {
   return new Uint8ClampedArray(20 * 20 * 4).fill(fill)
 }
 
-function checkerFrame(): Uint8ClampedArray {
+function checkerFrame(maxY = 20): Uint8ClampedArray {
   const pixels = frame()
-  for (let y = 0; y < 20; y += 1) {
+  for (let y = 0; y < maxY; y += 1) {
     for (let x = 0; x < 20; x += 1) {
       if ((x + y) % 2 !== 0) continue
       const offset = (y * 20 + x) * 4
@@ -68,6 +68,25 @@ describe('FrameAnalyzer', () => {
     })
     expect(analyzer.analyze(baseline)).toMatchObject({
       isStable: true,
+      isObscured: false,
+      changedPointCount: 0,
+    })
+  })
+
+  it('detects board-wide occlusion accumulated over multiple frames', () => {
+    const analyzer = new FrameAnalyzer({ stableFrameRequirement: 3, freezeChangedPointThreshold: 70 })
+    const baseline = {
+      pixels: frame(), width: 20, height: 20,
+      topLeft: { x: 2, y: 2 }, bottomRight: { x: 17, y: 17 },
+    }
+
+    analyzer.analyze(baseline)
+    expect(analyzer.analyze({ ...baseline, pixels: checkerFrame(10) }).isObscured).toBe(false)
+    expect(analyzer.analyze({ ...baseline, pixels: checkerFrame() })).toMatchObject({
+      isStable: false,
+      isObscured: true,
+    })
+    expect(analyzer.analyze(baseline)).toMatchObject({
       isObscured: false,
       changedPointCount: 0,
     })

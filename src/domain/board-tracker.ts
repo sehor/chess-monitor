@@ -301,7 +301,7 @@ export class BoardTracker {
 
   observe(observation: TrackerObservation): BoardTrackerEvent[] {
     validateObservation(observation)
-    if (this.lastCapturedAt !== null && observation.capturedAt < this.lastCapturedAt) return []
+    if (this.lastCapturedAt !== null && observation.capturedAt <= this.lastCapturedAt) return []
     const frameGapMs = this.lastCapturedAt === null ? 0 : observation.capturedAt - this.lastCapturedAt
     this.lastCapturedAt = observation.capturedAt
     this.observationCount += 1
@@ -327,9 +327,17 @@ export class BoardTracker {
       return this.transition({ status: 'CALIBRATING', message: 'Profile 已失效，需要重新校准' })
     }
     if (this.state.status === 'DESYNC') return []
+    const hasChange = observation.analysis.changedPointCount > 0
+    const resumedTrustedStateWithUncertainFrame =
+      (this.state.status === 'STABLE' || this.state.status === 'MOVE_CONFIRMED') &&
+      (hasChange || !observation.analysis.isStable || observation.analysis.isObscured === true)
     if (
       frameGapMs > this.options.maximumFrameGapMs &&
-      (this.state.status === 'MOVE_ANIMATING' || this.state.status === 'MOVE_CANDIDATE')
+      (
+        this.state.status === 'MOVE_ANIMATING' ||
+        this.state.status === 'MOVE_CANDIDATE' ||
+        resumedTrustedStateWithUncertainFrame
+      )
     ) {
       this.clearMotion()
       return this.transition({
@@ -339,8 +347,18 @@ export class BoardTracker {
         candidates: [],
       })
     }
+    if (observation.analysis.isObscured === true) {
+      this.clearMotion()
+      if (this.state.status === 'NO_BOARD' || this.state.status === 'CALIBRATING' || this.state.status === 'RESCANNING') {
+        return []
+      }
+      return this.transition({
+        status: 'RESCANNING',
+        since: observation.capturedAt,
+        message: '检测到棋盘遮挡，已丢弃运动证据并等待画面重新稳定',
+      })
+    }
 
-    const hasChange = observation.analysis.changedPointCount > 0
     const isEstablishingBaseline =
       this.state.status === 'NO_BOARD' ||
       this.state.status === 'CALIBRATING' ||

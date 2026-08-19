@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   RecognitionWorkerError,
   RecognitionWorkerManager,
@@ -126,6 +126,30 @@ describe('RecognitionWorkerManager', () => {
       name: 'RecognitionWorkerError',
       code: 'WORKER_CRASHED',
     }))
+  })
+
+  it('opens the circuit after repeated invalid worker outputs', async () => {
+    let now = 1_000
+    const backend: RecognitionInferenceBackend = {
+      async infer() { return [] },
+      async dispose() {},
+    }
+    const inferSpy = vi.spyOn(backend, 'infer')
+    const manager = new RecognitionWorkerManager({
+      backend,
+      timeoutMs: 200,
+      maxFailures: 3,
+      failureWindowMs: 5_000,
+      circuitCooldownMs: 1_000,
+      now: () => now,
+    })
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(manager.infer(frame())).rejects.toMatchObject({ code: 'INVALID_OUTPUT', retryable: true })
+      now += 100
+    }
+    await expect(manager.infer(frame())).rejects.toMatchObject({ code: 'WORKER_CRASHED', retryable: true })
+    expect(inferSpy).toHaveBeenCalledTimes(3)
   })
 })
 
