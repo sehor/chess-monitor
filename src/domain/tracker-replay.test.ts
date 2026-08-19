@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { CaptureAnalysis } from '../shared/ipc'
 import { expectedMovePoints, type TrackerObservation } from './board-tracker'
 import { RulesAdapter, type IccsMove } from './game'
-import { replayLabelledSequences, type LabelledReplaySequence } from './tracker-replay'
+import { injectReplayFaults, replayLabelledSequences, type LabelledReplaySequence } from './tracker-replay'
 
 function analysis(overrides: Partial<CaptureAnalysis> = {}): CaptureAnalysis {
   return {
@@ -36,6 +36,34 @@ function labelledSequence(id: string, move: IccsMove): LabelledReplaySequence {
 }
 
 describe('replayLabelledSequences', () => {
+  it('injects drop, duplicate, reorder and profile-invalid faults deterministically', () => {
+    const original = labelledSequence('fault-base', 'a3a4')
+    const dropped = injectReplayFaults(original, [{ type: 'drop-frame', frameIndex: 1 }])
+    const duplicated = injectReplayFaults(original, [{ type: 'duplicate-frame', frameIndex: 1 }])
+    const reordered = injectReplayFaults(original, [{ type: 'reorder-adjacent', frameIndex: 1 }])
+    const invalidProfile = injectReplayFaults(original, [{ type: 'profile-invalid', frameIndex: 1 }])
+
+    expect(dropped.frames).toHaveLength(original.frames.length - 1)
+    expect(duplicated.frames).toHaveLength(original.frames.length + 1)
+    expect(reordered.frames.map((frame) => frame.capturedAt)).toEqual([0, 400, 100])
+    expect(invalidProfile.frames[1].profileValid).toBe(false)
+    expect(original.frames.map((frame) => frame.capturedAt)).toEqual([0, 100, 400])
+  })
+
+  it('never silently confirms a wrong move across deterministic transport faults', () => {
+    const base = labelledSequence('faulted-move', 'a3a4')
+    const faulted = [
+      injectReplayFaults(base, [{ type: 'drop-frame', frameIndex: 1 }]),
+      injectReplayFaults(base, [{ type: 'duplicate-frame', frameIndex: 1 }]),
+      injectReplayFaults(base, [{ type: 'reorder-adjacent', frameIndex: 1 }]),
+      injectReplayFaults(base, [{ type: 'profile-invalid', frameIndex: 1 }]),
+    ]
+    const report = replayLabelledSequences(faulted)
+
+    expect(report.silentMismatchCount).toBe(0)
+    expect(report.results.every((result) => result.confirmedMove === null || result.confirmedMove === result.expectedMove)).toBe(true)
+  })
+
   it('replays 1,000 labelled moves and reports the phase-3 quality metrics', () => {
     const moves: IccsMove[] = ['a3a4', 'c3c4', 'e3e4', 'g3g4', 'i3i4']
     const sequences = Array.from({ length: 1_000 }, (_, index) => labelledSequence(`move-${index}`, moves[index % moves.length]))

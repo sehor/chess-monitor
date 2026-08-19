@@ -87,6 +87,39 @@ describe('Inline recognition worker lifecycle', () => {
     terminateSpy.mockRestore()
   })
 
+  it('opens a circuit after repeated worker failures and recovers after cooldown', async () => {
+    let now = 1_000
+    const backend = {
+      infer: vi.fn(async () => {
+        throw new Error('backend crashed')
+      }),
+      dispose: vi.fn(async () => undefined),
+    }
+    const manager = new RecognitionWorkerManager({
+      backend,
+      timeoutMs: 200,
+      maxFailures: 3,
+      failureWindowMs: 5_000,
+      circuitCooldownMs: 1_000,
+      now: () => now,
+    })
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(manager.infer(frame())).rejects.toMatchObject({ code: 'WORKER_CRASHED', retryable: true })
+      now += 100
+    }
+    await expect(manager.infer(frame())).rejects.toMatchObject({
+      code: 'WORKER_CRASHED',
+      retryable: true,
+      message: expect.stringContaining('circuit'),
+    })
+    expect(backend.infer).toHaveBeenCalledTimes(3)
+
+    now += 1_000
+    await expect(manager.infer(frame())).rejects.toMatchObject({ code: 'WORKER_CRASHED' })
+    expect(backend.infer).toHaveBeenCalledTimes(4)
+  })
+
   it('does not let a delayed exit from worker A reject worker B pending inference', async () => {
     const manager = new RecognitionWorkerManager({ manifest, timeoutMs: 200 })
     const first = manager.infer(frame())

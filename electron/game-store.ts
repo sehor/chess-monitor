@@ -49,12 +49,27 @@ function readUserVersion(database: DatabaseSync): number {
   return typeof row.user_version === 'number' ? row.user_version : 0
 }
 
+export interface GameStoreOptions {
+  busyTimeoutMs?: number
+}
+
+export interface GameDatabaseHealth {
+  schemaVersion: number
+  journalMode: string
+  foreignKeys: boolean
+  busyTimeoutMs: number
+}
+
 export class GameStore {
   private readonly database: DatabaseSync
 
-  constructor(path: string) {
+  constructor(path: string, options: GameStoreOptions = {}) {
+    const busyTimeoutMs = options.busyTimeoutMs ?? 2_500
+    if (!Number.isInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 30_000) {
+      throw new Error('Game database busy timeout is invalid')
+    }
     this.database = new DatabaseSync(path)
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;')
+    this.database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${busyTimeoutMs};`)
     this.migrate()
   }
 
@@ -111,6 +126,18 @@ export class GameStore {
 
   get schemaVersion(): number {
     return readUserVersion(this.database)
+  }
+
+  databaseHealth(): GameDatabaseHealth {
+    const journal = this.database.prepare('PRAGMA journal_mode').get() as { journal_mode?: unknown }
+    const foreignKeys = this.database.prepare('PRAGMA foreign_keys').get() as { foreign_keys?: unknown }
+    const busyTimeout = this.database.prepare('PRAGMA busy_timeout').get() as { timeout?: unknown }
+    return {
+      schemaVersion: this.schemaVersion,
+      journalMode: typeof journal.journal_mode === 'string' ? journal.journal_mode.toLowerCase() : 'unknown',
+      foreignKeys: foreignKeys.foreign_keys === 1,
+      busyTimeoutMs: typeof busyTimeout.timeout === 'number' ? busyTimeout.timeout : 0,
+    }
   }
 
   create(fen: string, orientation: Orientation, settings: RealtimeSettings): PersistedGameSession {

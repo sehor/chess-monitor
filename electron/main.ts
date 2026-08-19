@@ -178,7 +178,7 @@ function parseTrackerStartInput(value: unknown): { fen: string; orientation: Ori
       options[key] = rawOptions[key]
     }
   }
-  for (const key of ['animationWaitMs', 'candidateTimeoutMs'] as const) {
+  for (const key of ['animationWaitMs', 'candidateTimeoutMs', 'maximumFrameGapMs'] as const) {
     if (rawOptions[key] !== undefined) {
       if (!Number.isInteger(rawOptions[key])) return null
       options[key] = rawOptions[key] as number

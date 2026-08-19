@@ -83,6 +83,39 @@ describe('BoardTracker', () => {
     expect(events.find((event) => event.type === 'move-confirmed')).toMatchObject({ move: 'a3a4' })
   })
 
+  it('ignores out-of-order observations without changing the trusted state', () => {
+    const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom')
+    tracker.observe({ capturedAt: 100, sourceValid: true, profileValid: true, analysis: analysis() })
+    const before = tracker.snapshot()
+    const events = tracker.observe({ capturedAt: 99, sourceValid: true, profileValid: true, analysis: analysis({
+      isStable: false,
+      stableFrameCount: 0,
+      changedPointCount: 2,
+      pointScores: moveScores('a3a4'),
+    }) })
+
+    expect(events).toEqual([])
+    expect(tracker.snapshot()).toEqual(before)
+  })
+
+  it('enters DESYNC instead of confirming across an excessive frame gap', () => {
+    const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom', { maximumFrameGapMs: 500 })
+    tracker.observe({ capturedAt: 0, sourceValid: true, profileValid: true, analysis: analysis() })
+    tracker.observe({ capturedAt: 100, sourceValid: true, profileValid: true, analysis: analysis({
+      isStable: false,
+      stableFrameCount: 0,
+      changedPointCount: 2,
+      pointScores: moveScores('a3a4'),
+    }) })
+    const events = tracker.observe({ capturedAt: 900, sourceValid: true, profileValid: true, analysis: analysis() })
+
+    expect(events).toEqual([expect.objectContaining({
+      type: 'state',
+      state: expect.objectContaining({ status: 'DESYNC' }),
+    })])
+    expect(tracker.snapshot().confirmedMoveCount).toBe(0)
+  })
+
   it('refuses a dropped endpoint instead of silently confirming', () => {
     const tracker = new BoardTracker(DEFAULT_POSITION, 'red-bottom')
     tracker.observe({ capturedAt: 0, sourceValid: true, profileValid: true, analysis: analysis() })

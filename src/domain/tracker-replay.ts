@@ -11,6 +11,12 @@ export interface LabelledReplaySequence {
   frames: TrackerObservation[]
 }
 
+export type ReplayFault =
+  | { type: 'drop-frame'; frameIndex: number }
+  | { type: 'duplicate-frame'; frameIndex: number }
+  | { type: 'reorder-adjacent'; frameIndex: number }
+  | { type: 'profile-invalid'; frameIndex: number }
+
 export interface ReplaySequenceResult {
   id: string
   expectedMove: IccsMove | null
@@ -34,6 +40,42 @@ export interface TrackerReplayReport {
   normalRefusalRate: number | null
   p95StableToConfirmationMs: number | null
   results: ReplaySequenceResult[]
+}
+
+function cloneObservation(frame: TrackerObservation): TrackerObservation {
+  return {
+    ...frame,
+    analysis: {
+      ...frame.analysis,
+      pointScores: [...frame.analysis.pointScores],
+    },
+  }
+}
+
+export function injectReplayFaults(
+  sequence: LabelledReplaySequence,
+  faults: readonly ReplayFault[],
+): LabelledReplaySequence {
+  const frames = sequence.frames.map(cloneObservation)
+  for (const fault of faults) {
+    if (!Number.isInteger(fault.frameIndex) || fault.frameIndex < 0 || fault.frameIndex >= frames.length) {
+      throw new Error('Replay fault frame index is out of range')
+    }
+    if (fault.type === 'drop-frame') {
+      frames.splice(fault.frameIndex, 1)
+    } else if (fault.type === 'duplicate-frame') {
+      frames.splice(fault.frameIndex + 1, 0, cloneObservation(frames[fault.frameIndex]))
+    } else if (fault.type === 'reorder-adjacent') {
+      if (fault.frameIndex + 1 >= frames.length) throw new Error('Replay reorder fault requires a following frame')
+      ;[frames[fault.frameIndex], frames[fault.frameIndex + 1]] = [frames[fault.frameIndex + 1], frames[fault.frameIndex]]
+    } else {
+      frames[fault.frameIndex] = { ...frames[fault.frameIndex], profileValid: false }
+    }
+  }
+  return {
+    ...sequence,
+    frames,
+  }
 }
 
 function percentile95(values: number[]): number | null {

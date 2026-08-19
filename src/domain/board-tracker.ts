@@ -18,6 +18,7 @@ export interface TrackerOptions {
   ambiguityMargin: number
   animationWaitMs: number
   candidateTimeoutMs: number
+  maximumFrameGapMs: number
 }
 
 export interface TrackerObservation {
@@ -102,6 +103,7 @@ const DEFAULT_OPTIONS: TrackerOptions = {
   ambiguityMargin: 0.01,
   animationWaitMs: 250,
   candidateTimeoutMs: 1_500,
+  maximumFrameGapMs: 750,
 }
 
 function positionHash(fen: string): string {
@@ -135,7 +137,8 @@ function validateOptions(options: TrackerOptions): void {
     !Number.isFinite(options.confirmThreshold) || options.confirmThreshold < options.changeThreshold || options.confirmThreshold > 1 ||
     !Number.isFinite(options.ambiguityMargin) || options.ambiguityMargin < 0 || options.ambiguityMargin > 1 ||
     !Number.isInteger(options.animationWaitMs) || options.animationWaitMs < 0 || options.animationWaitMs > 5_000 ||
-    !Number.isInteger(options.candidateTimeoutMs) || options.candidateTimeoutMs < 100 || options.candidateTimeoutMs > 30_000
+    !Number.isInteger(options.candidateTimeoutMs) || options.candidateTimeoutMs < 100 || options.candidateTimeoutMs > 30_000 ||
+    !Number.isInteger(options.maximumFrameGapMs) || options.maximumFrameGapMs < 100 || options.maximumFrameGapMs > 30_000
   ) {
     throw new Error('Tracker options are invalid')
   }
@@ -160,6 +163,7 @@ export class BoardTracker {
   private observationCount = 0
   private confirmedMoveCount = 0
   private diagnosticObservations: TrackerDiagnosticObservation[] = []
+  private lastCapturedAt: number | null = null
 
   constructor(
     fen: string,
@@ -297,6 +301,9 @@ export class BoardTracker {
 
   observe(observation: TrackerObservation): BoardTrackerEvent[] {
     validateObservation(observation)
+    if (this.lastCapturedAt !== null && observation.capturedAt < this.lastCapturedAt) return []
+    const frameGapMs = this.lastCapturedAt === null ? 0 : observation.capturedAt - this.lastCapturedAt
+    this.lastCapturedAt = observation.capturedAt
     this.observationCount += 1
     this.diagnosticObservations.push({
       capturedAt: observation.capturedAt,
@@ -320,6 +327,18 @@ export class BoardTracker {
       return this.transition({ status: 'CALIBRATING', message: 'Profile 已失效，需要重新校准' })
     }
     if (this.state.status === 'DESYNC') return []
+    if (
+      frameGapMs > this.options.maximumFrameGapMs &&
+      (this.state.status === 'MOVE_ANIMATING' || this.state.status === 'MOVE_CANDIDATE')
+    ) {
+      this.clearMotion()
+      return this.transition({
+        status: 'DESYNC',
+        since: observation.capturedAt,
+        message: `连续帧间隔 ${frameGapMs} ms 超出安全上限，无法证明仍是单步变化`,
+        candidates: [],
+      })
+    }
 
     const hasChange = observation.analysis.changedPointCount > 0
     const isEstablishingBaseline =

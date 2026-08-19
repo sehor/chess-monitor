@@ -388,11 +388,21 @@ export interface RecognitionWorkerManagerOptions {
   backend?: RecognitionInferenceBackend
   manifest?: LoadedRecognitionModelManifest
   timeoutMs?: number
+  maxFailures?: number
+  failureWindowMs?: number
+  circuitCooldownMs?: number
+  now?: () => number
 }
 
 export class RecognitionWorkerManager {
   private readonly backend: RecognitionInferenceBackend
   private readonly timeoutMs: number
+  private readonly maxFailures: number
+  private readonly failureWindowMs: number
+  private readonly circuitCooldownMs: number
+  private readonly now: () => number
+  private failureTimestamps: number[] = []
+  private circuitOpenedAt: number | null = null
 
   constructor(options: RecognitionWorkerManagerOptions) {
     if (!options.backend && !options.manifest) {
@@ -400,13 +410,34 @@ export class RecognitionWorkerManager {
     }
     this.backend = options.backend ?? new InlineOnnxWorkerBackend(options.manifest!)
     this.timeoutMs = options.timeoutMs ?? 1_500
-    if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 10 || this.timeoutMs > 30_000) {
-      throw new Error('Recognition worker timeout is invalid')
+    this.maxFailures = options.maxFailures ?? 3
+    this.failureWindowMs = options.failureWindowMs ?? 60_000
+    this.circuitCooldownMs = options.circuitCooldownMs ?? 5_000
+    this.now = options.now ?? Date.now
+    if (
+      !Number.isInteger(this.timeoutMs) || this.timeoutMs < 10 || this.timeoutMs > 30_000 ||
+      !Number.isInteger(this.maxFailures) || this.maxFailures < 1 || this.maxFailures > 100 ||
+      !Number.isInteger(this.failureWindowMs) || this.failureWindowMs < 100 || this.failureWindowMs > 300_000 ||
+      !Number.isInteger(this.circuitCooldownMs) || this.circuitCooldownMs < 100 || this.circuitCooldownMs > 300_000
+    ) {
+      throw new Error('Recognition worker recovery options are invalid')
     }
   }
 
   async infer(frame: RecognitionFrameInput): Promise<RecognitionProbabilityFrame> {
     validateFrame(frame)
+    const now = this.now()
+    if (this.circuitOpenedAt !== null) {
+      if (now - this.circuitOpenedAt < this.circuitCooldownMs) {
+        throw new RecognitionWorkerError(
+          'WORKER_CRASHED',
+          'Recognition worker circuit is open after repeated failures',
+          true,
+        )
+      }
+      this.circuitOpenedAt = null
+      this.failureTimestamps = []
+    }
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       const rows = await Promise.race([
@@ -419,6 +450,7 @@ export class RecognitionWorkerManager {
           )), this.timeoutMs)
         }),
       ])
+      this.failureTimestamps = []
       return softmaxRows(rows)
     } catch (error) {
       if (error instanceof RecognitionWorkerError && error.code === 'WORKER_TIMEOUT') {
@@ -427,12 +459,15 @@ export class RecognitionWorkerManager {
         // synchronously, so the next request creates a fresh worker.
         void this.backend.dispose().catch(() => undefined)
       }
-      if (error instanceof RecognitionWorkerError) throw error
-      throw new RecognitionWorkerError(
-        'WORKER_CRASHED',
-        error instanceof Error ? error.message : 'Recognition worker crashed',
-        true,
-      )
+      const normalized = error instanceof RecognitionWorkerError
+        ? error
+        : new RecognitionWorkerError(
+            'WORKER_CRASHED',
+            error instanceof Error ? error.message : 'Recognition worker crashed',
+            true,
+          )
+      if (normalized.retryable) this.recordFailure(this.now())
+      throw normalized
     } finally {
       if (timeout) clearTimeout(timeout)
     }
@@ -440,5 +475,11 @@ export class RecognitionWorkerManager {
 
   async dispose(): Promise<void> {
     await this.backend.dispose()
+  }
+
+  private recordFailure(at: number): void {
+    this.failureTimestamps = this.failureTimestamps.filter((timestamp) => at - timestamp <= this.failureWindowMs)
+    this.failureTimestamps.push(at)
+    if (this.failureTimestamps.length >= this.maxFailures) this.circuitOpenedAt = at
   }
 }

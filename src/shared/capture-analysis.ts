@@ -15,6 +15,7 @@ export interface CaptureFrameInput {
 
 export interface CaptureAnalysis {
   isStable: boolean
+  isObscured?: boolean
   stableFrameCount: number
   changedPointCount: number
   medianScore: number
@@ -25,6 +26,7 @@ export interface FrameAnalyzerOptions {
   lowThreshold?: number
   highThreshold?: number
   stableFrameRequirement?: number
+  freezeChangedPointThreshold?: number
 }
 
 function luminance(frame: CaptureFrameInput, x: number, y: number): number {
@@ -97,17 +99,22 @@ export class FrameAnalyzer {
   private readonly lowThreshold: number
   private readonly highThreshold: number
   private readonly stableFrameRequirement: number
+  private readonly freezeChangedPointThreshold: number
 
   constructor(options: FrameAnalyzerOptions = {}) {
     this.lowThreshold = options.lowThreshold ?? 0.015
     this.highThreshold = options.highThreshold ?? 0.05
     this.stableFrameRequirement = options.stableFrameRequirement ?? 3
+    this.freezeChangedPointThreshold = options.freezeChangedPointThreshold ?? 45
     if (
       this.lowThreshold < 0 ||
       this.highThreshold < this.lowThreshold ||
       this.highThreshold > 1 ||
       !Number.isInteger(this.stableFrameRequirement) ||
-      this.stableFrameRequirement < 1
+      this.stableFrameRequirement < 1 ||
+      !Number.isInteger(this.freezeChangedPointThreshold) ||
+      this.freezeChangedPointThreshold < 1 ||
+      this.freezeChangedPointThreshold > 90
     ) {
       throw new Error('Frame analyzer thresholds are invalid')
     }
@@ -128,6 +135,7 @@ export class FrameAnalyzer {
       this.stableFrameCount = 1
       return {
         isStable: this.stableFrameRequirement === 1,
+        isObscured: false,
         stableFrameCount: this.stableFrameCount,
         changedPointCount: 0,
         medianScore: 0,
@@ -136,13 +144,26 @@ export class FrameAnalyzer {
     }
 
     const pointScores = samples.map((sample, index) => compensatedDifference(sample, this.previousSamples![index]))
-    this.previousSamples = samples
     const medianScore = median(pointScores)
-    this.stableFrameCount = medianScore < this.lowThreshold ? this.stableFrameCount + 1 : 0
     const changedPointCount = pointScores.filter((score) => score >= this.highThreshold).length
+    const isObscured = changedPointCount >= this.freezeChangedPointThreshold
+    if (isObscured) {
+      this.stableFrameCount = 0
+      return {
+        isStable: false,
+        isObscured: true,
+        stableFrameCount: 0,
+        changedPointCount,
+        medianScore,
+        pointScores,
+      }
+    }
 
+    this.previousSamples = samples
+    this.stableFrameCount = medianScore < this.lowThreshold ? this.stableFrameCount + 1 : 0
     return {
       isStable: this.stableFrameCount >= this.stableFrameRequirement,
+      isObscured: false,
       stableFrameCount: this.stableFrameCount,
       changedPointCount,
       medianScore,

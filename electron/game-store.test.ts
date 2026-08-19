@@ -37,6 +37,17 @@ afterEach(async () => {
 })
 
 describe('GameStore', () => {
+  it('configures WAL, foreign keys and a bounded busy timeout for recovery diagnostics', async () => {
+    const store = new GameStore(await databasePath(), { busyTimeoutMs: 2_500 })
+    expect(store.databaseHealth()).toEqual({
+      schemaVersion: 1,
+      journalMode: 'wal',
+      foreignKeys: true,
+      busyTimeoutMs: 2_500,
+    })
+    store.close()
+  })
+
   it('persists a confirmed move and restores an unfinished game after reopening', async () => {
     const path = await databasePath()
     const first = new GameStore(path)
