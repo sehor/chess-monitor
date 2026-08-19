@@ -17,7 +17,7 @@ import type {
   TrackerApi,
   TrackerStartInput,
 } from '../src/shared/ipc'
-import type { CaptureProfileInput } from '../src/shared/profile'
+import type { CaptureProfileInput, ProfileMatchContext } from '../src/shared/profile'
 import type { BoardTrackerEvent } from '../src/domain/board-tracker'
 import type { RecognitionCorrection } from '../src/domain/recognition'
 
@@ -46,8 +46,15 @@ const profiles: ProfileApi = Object.freeze({
   list: () => ipcRenderer.invoke('profile:list'),
   save: (input: CaptureProfileInput) => ipcRenderer.invoke('profile:save', input),
   delete: (id: string) => ipcRenderer.invoke('profile:delete', id),
+  duplicate: (id: string) => ipcRenderer.invoke('profile:duplicate', id),
+  setEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('profile:set-enabled', id, enabled),
+  listVersions: (id: string) => ipcRenderer.invoke('profile:list-versions', id),
+  rollback: (id: string, profileVersion: number) => ipcRenderer.invoke('profile:rollback', id, profileVersion),
+  match: (context: ProfileMatchContext) => ipcRenderer.invoke('profile:match', context),
   setActive: (id: string | null) => ipcRenderer.invoke('profile:set-active', id),
   getActive: () => ipcRenderer.invoke('profile:get-active'),
+  exportProfile: (id: string) => ipcRenderer.invoke('profile:export', id),
+  importProfile: () => ipcRenderer.invoke('profile:import'),
   exportDiagnostics: (id: string) => ipcRenderer.invoke('profile:export-diagnostics', id),
 })
 

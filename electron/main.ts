@@ -1,8 +1,8 @@
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, type OpenDialogOptions } from 'electron'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   failure,
   success,
@@ -19,8 +19,8 @@ import { assignDatasetSplit, renderCaptureReport, type CaptureSampleRecord } fro
 import { resolveSelectedSourceId } from '../src/shared/capture-source'
 import { XiangqiGame } from '../src/domain/game'
 import { ProfileStore } from './profile-store'
-import type { CaptureSourceKind } from '../src/shared/profile'
-import { evaluateProfileCompatibility } from '../src/shared/profile'
+import type { CaptureProfile, CaptureSourceKind } from '../src/shared/profile'
+import { createProfilePackage, evaluateProfileCompatibility, matchProfileCandidates, parseProfilePackage, type ProfileMatchContext } from '../src/shared/profile'
 import type { TrackerOptions } from '../src/domain/board-tracker'
 import { parseFen, type Orientation, type Side } from '../src/domain/position'
 import type { RecognitionCorrection } from '../src/domain/recognition'
@@ -56,12 +56,56 @@ function isValidProfileId(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 }
 
+function isProfileMatchContext(value: unknown): value is ProfileMatchContext {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Record<string, unknown>
+  const source = candidate.source as Record<string, unknown> | undefined
+  const frame = candidate.frame as Record<string, unknown> | undefined
+  return Boolean(
+    source && ['window', 'screen'].includes(source.kind as string) && typeof source.name === 'string' && source.name.length <= 256 &&
+    frame && Number.isInteger(frame.width) && Number.isInteger(frame.height) && typeof frame.dpi === 'number' && Number.isFinite(frame.dpi),
+  )
+}
+
 function isValidIccsMove(value: unknown): value is string {
   return typeof value === 'string' && /^[a-i][0-9][a-i][0-9]$/.test(value)
 }
 
 function sourceKind(sourceId: string): CaptureSourceKind {
   return sourceId.startsWith('screen:') ? 'screen' : 'window'
+}
+
+function recognitionResourceRoot(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'recognition') : join(process.cwd(), 'resources', 'recognition')
+}
+
+async function loadProfileRecognitionManifest(profile: CaptureProfile | null) {
+  const root = recognitionResourceRoot()
+  const manifestPath = profile?.model.strategy === 'dedicated'
+    ? join(root, profile.model.manifestPath)
+    : join(root, 'manifest.json')
+  if (profile?.model.strategy === 'dedicated') {
+    const manifestBytes = await readFile(manifestPath)
+    const actualManifestSha256 = createHash('sha256').update(manifestBytes).digest('hex')
+    if (actualManifestSha256 !== profile.model.manifestSha256) {
+      throw new RecognitionWorkerError('MODEL_HASH_MISMATCH', 'Profile recognition manifest hash does not match', false)
+    }
+  }
+  const manifest = await loadRecognitionManifest(manifestPath)
+  const expectedVersion = profile?.model.modelVersion
+  if (expectedVersion && manifest.modelVersion !== expectedVersion) {
+    throw new RecognitionWorkerError('MODEL_MANIFEST_INVALID', 'Profile recognition model version does not match its manifest', false)
+  }
+  return manifest
+}
+
+async function switchRecognitionCoordinator(profile: CaptureProfile | null): Promise<void> {
+  const manifest = await loadProfileRecognitionManifest(profile)
+  const next = new RecognitionCoordinator({ manifest, timeoutMs: 1_500 })
+  const previous = recognitionCoordinator
+  recognitionCoordinator = next
+  recognitionStartupError = undefined
+  await previous?.dispose()
 }
 
 function configureFrameAnalyzer(profile: ReturnType<ProfileStore['getActive']>): void {
@@ -210,12 +254,20 @@ function startRealtimeTracking(input: RealtimeStartInput): IpcResult<RealtimeSna
   if (!activeProfile) return failure('PROFILE_NOT_FOUND', 'Activate a valid Profile before starting tracking')
   if (!realtimeCoordinator) return failure('GAME_STORAGE_ERROR', 'Game storage is unavailable', true)
   try {
-    return success(realtimeCoordinator.start(input, {
-      changeThreshold: activeProfile.thresholds.high,
-      confirmThreshold: Math.min(1, Math.max(activeProfile.thresholds.high, activeProfile.thresholds.high * 1.5)),
-      animationWaitMs: activeProfile.animationWaitMs,
-      ...input.options,
-    }))
+    return success(realtimeCoordinator.start(
+      input,
+      {
+        changeThreshold: activeProfile.thresholds.high,
+        confirmThreshold: Math.min(1, Math.max(activeProfile.thresholds.high, activeProfile.thresholds.high * 1.5)),
+        animationWaitMs: activeProfile.animationWaitMs,
+        ...input.options,
+      },
+      {
+        profileId: activeProfile.id,
+        profileVersion: activeProfile.profileVersion,
+        modelVersion: activeProfile.model.modelVersion ?? recognitionCoordinator?.snapshot().modelVersion ?? null,
+      },
+    ))
   } catch (error) {
     return failure(
       'GAME_STORAGE_ERROR',
@@ -379,10 +431,47 @@ ipcMain.handle('profile:delete', (_event, id: unknown) => {
   }
 })
 
-ipcMain.handle('profile:set-active', (_event, id: unknown) => {
+ipcMain.handle('profile:duplicate', (_event, id: unknown) => {
+  if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  try { return success(profileStore.duplicate(id)) }
+  catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to duplicate profile', true) }
+})
+
+ipcMain.handle('profile:set-enabled', (_event, id: unknown, enabled: unknown) => {
+  if (!isValidProfileId(id) || typeof enabled !== 'boolean') return failure('INVALID_INPUT', 'Profile enabled state is invalid')
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  try { return success(profileStore.setEnabled(id, enabled)) }
+  catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to update profile', true) }
+})
+
+ipcMain.handle('profile:list-versions', (_event, id: unknown) => {
+  if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  return success(profileStore.listVersions(id))
+})
+
+ipcMain.handle('profile:rollback', (_event, id: unknown, profileVersion: unknown) => {
+  if (!isValidProfileId(id) || !Number.isInteger(profileVersion) || (profileVersion as number) < 1) return failure('INVALID_INPUT', 'Profile rollback target is invalid')
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  try { return success(profileStore.rollback(id, profileVersion as number)) }
+  catch (error) { return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to rollback profile', true) }
+})
+
+ipcMain.handle('profile:match', (_event, context: unknown) => {
+  if (!isProfileMatchContext(context)) return failure('INVALID_INPUT', 'Profile match context is invalid')
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  return success(matchProfileCandidates(profileStore.list().profiles, context))
+})
+
+ipcMain.handle('profile:set-active', async (_event, id: unknown) => {
   if (id !== null && !isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
   if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  const candidate = id === null ? null : profileStore.get(id)
+  if (id !== null && !candidate) return failure('PROFILE_NOT_FOUND', 'Profile does not exist')
+  if (candidate && !candidate.isEnabled) return failure('INVALID_INPUT', 'Profile is disabled')
   try {
+    await switchRecognitionCoordinator(candidate)
     profileStore.setActive(id)
     const active = profileStore.getActive()
     selectedSourceId = undefined
@@ -391,9 +480,8 @@ ipcMain.handle('profile:set-active', (_event, id: unknown) => {
     configureFrameAnalyzer(active)
     return success(active)
   } catch (error) {
-    return error instanceof Error && error.message === 'Profile does not exist'
-      ? failure('PROFILE_NOT_FOUND', 'Profile does not exist')
-      : failure('PROFILE_STORAGE_ERROR', 'Unable to activate the profile', true)
+    if (error instanceof RecognitionWorkerError) return recognitionFailure(error)
+    return failure('PROFILE_STORAGE_ERROR', 'Unable to activate the profile', true)
   }
 })
 
@@ -403,6 +491,46 @@ ipcMain.handle('profile:get-active', () => {
     return success(profileStore.getActive())
   } catch {
     return failure('PROFILE_STORAGE_ERROR', 'Unable to read the active profile', true)
+  }
+})
+
+ipcMain.handle('profile:export', async (_event, id: unknown) => {
+  if (!isValidProfileId(id)) return failure('INVALID_INPUT', 'A valid profile ID is required')
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  const profile = profileStore.get(id)
+  if (!profile) return failure('PROFILE_NOT_FOUND', 'Profile does not exist')
+  const result = await dialog.showSaveDialog({
+    defaultPath: `${profile.name.replace(/[\\/:*?"<>|]/g, '_')}-v${profile.profileVersion}.json`,
+    filters: [{ name: 'Chess Monitor Profile', extensions: ['json'] }],
+  })
+  if (result.canceled || !result.filePath) return success({ fileName: '' })
+  try {
+    await writeFile(result.filePath, `${JSON.stringify(createProfilePackage(profile), null, 2)}\n`)
+    return success({ fileName: result.filePath })
+  } catch (error) {
+    return failure('PROFILE_STORAGE_ERROR', error instanceof Error ? error.message : 'Unable to export profile', true)
+  }
+})
+
+ipcMain.handle('profile:import', async () => {
+  if (!profileStore) return failure('PROFILE_STORAGE_ERROR', 'Profile storage is unavailable', true)
+  const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Chess Monitor Profile', extensions: ['json'] }] })
+  if (result.canceled || result.filePaths.length !== 1) return success(null)
+  try {
+    const bytes = await readFile(result.filePaths[0])
+    if (bytes.byteLength > 512 * 1024) return failure('INVALID_INPUT', 'Profile package is too large')
+    const parsedJson = JSON.parse(bytes.toString('utf8'))
+    const parsed = parseProfilePackage(parsedJson)
+    if (!parsed.ok) return failure('INVALID_INPUT', parsed.error)
+    if (parsed.value.profile.model.strategy === 'dedicated') {
+      const root = app.isPackaged ? join(process.resourcesPath, 'recognition') : join(process.cwd(), 'resources', 'recognition')
+      const manifestBytes = await readFile(join(root, parsed.value.profile.model.manifestPath))
+      const actual = createHash('sha256').update(manifestBytes).digest('hex')
+      if (actual !== parsed.value.profile.model.manifestSha256) return failure('INVALID_INPUT', 'Profile model manifest hash does not match')
+    }
+    return success(profileStore.importPackage(parsed.value))
+  } catch (error) {
+    return failure('INVALID_INPUT', error instanceof Error ? error.message : 'Profile package cannot be imported')
   }
 })
 
@@ -848,12 +976,7 @@ app.whenReady().then(async () => {
   }
 
   try {
-    const manifestPath = app.isPackaged
-      ? join(process.resourcesPath, 'recognition', 'manifest.json')
-      : join(process.cwd(), 'resources', 'recognition', 'manifest.json')
-    const manifest = await loadRecognitionManifest(manifestPath)
-    recognitionCoordinator = new RecognitionCoordinator({ manifest, timeoutMs: 1_500 })
-    recognitionStartupError = undefined
+    await switchRecognitionCoordinator(profileStore?.getActive() ?? null)
   } catch (error) {
     recognitionStartupError = error instanceof RecognitionWorkerError
       ? error

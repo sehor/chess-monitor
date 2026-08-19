@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { deriveIntersectionPoints, type Point } from '../lib/calibration'
 import { CAPTURE_QUALITY_EVENT_MINIMUM } from '../shared/capture-report'
 import type { CaptureAnalysis, CaptureSampleAnnotation, CaptureSource } from '../shared/ipc'
-import { evaluateProfileCompatibility, type CaptureProfile, type CaptureProfileInput } from '../shared/profile'
+import { evaluateProfileCompatibility, type CaptureProfile, type CaptureProfileInput, type ProfileMatchCandidate } from '../shared/profile'
 import CaptureSampleForm from './CaptureSampleForm.vue'
 import ProfilePanel from './ProfilePanel.vue'
 import TrackingPanel from './TrackingPanel.vue'
@@ -20,6 +20,14 @@ const sampleMessage = ref<string | null>(null)
 const roiScale = ref(0.6)
 const orientation = ref<'red-bottom' | 'black-bottom'>('red-bottom')
 const profileMessage = ref<string | null>(null)
+const profileCandidates = ref<ProfileMatchCandidate[]>([])
+const staticNoiseSamples = ref<number[]>([])
+const thresholdSuggestion = computed(() => {
+  if (staticNoiseSamples.value.length < 10) return null
+  const sorted = [...staticNoiseSamples.value].sort((a, b) => a - b)
+  const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]
+  return Math.min(1, Math.max(0.0005, p95 * 3))
+})
 const selectedSource = computed(() => sources.value.find((source) => source.id === selectedSourceId.value) ?? null)
 const gridPoints = computed(() => calibrationPoints.value.length === 2
   ? deriveIntersectionPoints(calibrationPoints.value[0], calibrationPoints.value[1])
@@ -122,12 +130,31 @@ async function startPreview(): Promise<void> {
     stream.getVideoTracks()[0].onended = () => void recoverSource()
     preview.value.srcObject = stream
     await preview.value.play()
+    await refreshProfileCandidates()
     startSampling()
   } catch {
     errorMessage.value = '无法开始捕获预览，请确认来源仍存在且允许捕获。'
   } finally {
     isStartingPreview.value = false
   }
+}
+
+async function refreshProfileCandidates(): Promise<void> {
+  const video = preview.value
+  const source = selectedSource.value
+  if (!video || !source || video.videoWidth === 0 || video.videoHeight === 0) return
+  const result = await window.chessMonitor.profiles.match({
+    source: { kind: source.kind, name: source.name },
+    frame: { width: video.videoWidth, height: video.videoHeight, dpi: Math.round(window.devicePixelRatio * 100) },
+  })
+  profileCandidates.value = result.ok ? result.value : []
+}
+
+async function confirmProfileCandidate(candidate: ProfileMatchCandidate): Promise<void> {
+  const activated = await window.chessMonitor.profiles.setActive(candidate.profile.id)
+  if (!activated.ok || !activated.value) return void (profileMessage.value = activated.ok ? '无法激活候选 Profile' : activated.error.message)
+  profileCandidates.value = []
+  await applySavedProfile(activated.value)
 }
 
 async function applySavedProfile(profile: CaptureProfile): Promise<void> {
@@ -214,7 +241,12 @@ async function sampleFrame(): Promise<void> {
       roiScale: roiScale.value,
       dpi: Math.round(window.devicePixelRatio * 100),
     })
-    if (result.ok) frameAnalysis.value = result.value
+    if (result.ok) {
+      frameAnalysis.value = result.value
+      if (result.value.isStable) {
+        staticNoiseSamples.value = [...staticNoiseSamples.value.slice(-49), result.value.medianScore]
+      }
+    }
   } finally {
     isAnalyzingFrame = false
   }
@@ -287,6 +319,7 @@ function calibrate(event: MouseEvent): void {
 function resetCalibration(): void {
   calibrationPoints.value = []
   frameAnalysis.value = null
+  staticNoiseSamples.value = []
   stopSampling()
   if (selectedSourceId.value) void selectSource(selectedSourceId.value)
 }
@@ -355,6 +388,16 @@ onBeforeUnmount(() => {
           {{ calibrationPoints.length === 0 ? '点击预览中的棋盘左上交叉点。' : calibrationPoints.length === 1 ? '再点击右下交叉点。' : frameAnalysis?.isStable ? `已连续 ${frameAnalysis.stableFrameCount} 帧稳定。` : `检测到 ${frameAnalysis?.changedPointCount ?? 0} 个显著变化点；稳定帧 ${frameAnalysis?.stableFrameCount ?? 0}/3。` }}
         </p>
         <p v-if="gridPoints.length === 90" class="status-message">已显示 90 个实际 ROI；送入分析前统一归一化为 32×32 灰度块。</p>
+        <p v-if="thresholdSuggestion !== null" class="status-message">静态噪声样本 {{ staticNoiseSamples.length }} 帧；建议 high 阈值约 {{ thresholdSuggestion.toFixed(4) }}（取稳定帧中位变化分数 P95 × 3，保存前仍需走子样本验证）。</p>
+        <section v-if="profileCandidates.length" class="profile-match-panel" aria-labelledby="profile-match-title">
+          <strong id="profile-match-title">发现 {{ profileCandidates.length }} 个 Profile 候选，请确认首次绑定</strong>
+          <ul>
+            <li v-for="candidate in profileCandidates" :key="candidate.profile.id">
+              <span><b>{{ candidate.profile.name }}</b>：{{ candidate.reasons.join('；') }}</span>
+              <button type="button" class="secondary-action" @click="confirmProfileCandidate(candidate)">确认使用</button>
+            </li>
+          </ul>
+        </section>
         <p v-if="roiBoundaryWarning" class="error-message" role="alert">{{ roiBoundaryWarning }}</p>
         <p v-if="sampleMessage" class="status-message" role="status">{{ sampleMessage }}</p>
         <p v-if="profileMessage" class="status-message" role="status">{{ profileMessage }}</p>

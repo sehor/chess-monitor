@@ -41,14 +41,21 @@ export interface CaptureSource {
   isSelected?: boolean
 }
 
-import type { CaptureProfile, CaptureProfileInput, ProfileListResult } from './profile'
+import type { CaptureProfile, CaptureProfileInput, ProfileListResult, ProfileMatchCandidate, ProfileMatchContext } from './profile'
 
 export interface ProfileApi {
   list(): Promise<IpcResult<ProfileListResult>>
   save(input: CaptureProfileInput): Promise<IpcResult<CaptureProfile>>
   delete(id: string): Promise<IpcResult<{ deleted: boolean }>>
+  duplicate(id: string): Promise<IpcResult<CaptureProfile>>
+  setEnabled(id: string, enabled: boolean): Promise<IpcResult<CaptureProfile>>
+  listVersions(id: string): Promise<IpcResult<CaptureProfile[]>>
+  rollback(id: string, profileVersion: number): Promise<IpcResult<CaptureProfile>>
+  match(context: ProfileMatchContext): Promise<IpcResult<ProfileMatchCandidate[]>>
   setActive(id: string | null): Promise<IpcResult<CaptureProfile | null>>
   getActive(): Promise<IpcResult<CaptureProfile | null>>
+  exportProfile(id: string): Promise<IpcResult<{ fileName: string }>>
+  importProfile(): Promise<IpcResult<CaptureProfile | null>>
   exportDiagnostics(id: string): Promise<IpcResult<{ fileName: string }>>
 }
 

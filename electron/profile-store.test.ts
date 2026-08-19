@@ -42,7 +42,7 @@ describe('ProfileStore', () => {
     first.close()
 
     const reopened = new ProfileStore(path)
-    expect(reopened.schemaVersion).toBe(1)
+    expect(reopened.schemaVersion).toBe(2)
     expect(reopened.getActive()?.name).toBe('更新后的 Profile')
     expect(reopened.list()).toMatchObject({ activeProfileId: saved.id, issues: [] })
     reopened.close()
@@ -84,6 +84,46 @@ describe('ProfileStore', () => {
     database.exec('PRAGMA user_version = 99')
     database.close()
     expect(() => new ProfileStore(path)).toThrow('newer than supported')
+  })
+
+  it('keeps version history, supports rollback, duplicate and disable without losing the active record', async () => {
+    const path = await databasePath()
+    const store = new ProfileStore(path)
+    const first = store.save(input)
+    const second = store.save({ ...input, id: first.id, name: '第二版', priority: 10 })
+    const third = store.save({ ...input, id: first.id, name: '第三版', theme: '深色' })
+
+    expect([first.profileVersion, second.profileVersion, third.profileVersion]).toEqual([1, 2, 3])
+    expect(store.listVersions(first.id).map((item) => item.profileVersion)).toEqual([3, 2, 1])
+
+    const rolledBack = store.rollback(first.id, 1)
+    expect(rolledBack.profileVersion).toBe(4)
+    expect(rolledBack.name).toBe(input.name)
+
+    const duplicate = store.duplicate(first.id)
+    expect(duplicate.id).not.toBe(first.id)
+    expect(duplicate.profileVersion).toBe(1)
+    expect(duplicate.name).toContain('副本')
+
+    store.setEnabled(first.id, false)
+    expect(store.get(first.id)?.isEnabled).toBe(false)
+    store.close()
+  })
+
+  it('imports a validated package as a new local profile version', async () => {
+    const path = await databasePath()
+    const store = new ProfileStore(path)
+    const saved = store.save(input)
+    const imported = store.importPackage({
+      kind: 'chess-monitor-profile',
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      profile: saved,
+    })
+    expect(imported.id).not.toBe(saved.id)
+    expect(imported.profileVersion).toBe(1)
+    expect(imported.name).toBe(saved.name)
+    store.close()
   })
 
   it('restores compatible coordinates through 30 close-and-reopen cycles', async () => {

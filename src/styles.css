@@ -111,12 +111,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .sample-form .check-field { display: flex; align-items: center; color: inherit; }
 .profile-panel { margin-top: 1.25rem; border-top: 1px solid #d7ddd4; padding-top: 1rem; }
 .profile-editor { display: grid; grid-template-columns: auto minmax(7rem, 1fr); align-items: center; gap: 0.5rem 0.75rem; }
-.profile-editor input { min-width: 0; border: 1px solid #9ca79e; border-radius: 0.25rem; background: #fff; padding: 0.4rem 0.5rem; color: inherit; }
+.profile-editor input, .profile-editor select { min-width: 0; border: 1px solid #9ca79e; border-radius: 0.25rem; background: #fff; padding: 0.4rem 0.5rem; color: inherit; }
 .profile-editor .primary-action { grid-column: 1 / -1; }
+.profile-toolbar, .inline-fields { display: flex; align-items: center; gap: 0.5rem; }
+.inline-fields input { width: 6rem; }
+.inline-fields input:last-child:not(:first-child) { flex: 1; width: auto; }
 .profile-list { display: grid; gap: 0.5rem; margin: 1rem 0 0; padding: 0; list-style: none; }
-.profile-list li { display: grid; grid-template-columns: minmax(8rem, 1fr) auto auto auto auto; align-items: center; gap: 0.5rem; border-top: 1px solid #d7ddd4; padding-top: 0.5rem; }
+.profile-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; border-top: 1px solid #d7ddd4; padding-top: 0.5rem; }
+.profile-list li > div { flex: 1 1 18rem; }
 .profile-list li > div { display: grid; gap: 0.2rem; }
 .profile-list small { color: #56645b; }
+.profile-match-panel { margin-top: 0.75rem; border: 1px solid #c9d1c8; border-radius: 0.25rem; padding: 0.75rem; background: #f7f9f6; }
+.profile-match-panel ul { display: grid; gap: 0.5rem; margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.profile-match-panel li { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
 .status-pill { border-radius: 999px; background: #e4eee0; padding: 0.2rem 0.5rem; color: #315438; font-size: 0.75rem; font-weight: 700; }
 .status-pill.warning { background: #fff0d5; color: #7a4712; }
 .tracking-panel { margin-top: 1.5rem; border-top: 1px solid #d7ddd4; padding-top: 1.5rem; }

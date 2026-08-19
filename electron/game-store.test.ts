@@ -40,11 +40,22 @@ describe('GameStore', () => {
   it('configures WAL, foreign keys and a bounded busy timeout for recovery diagnostics', async () => {
     const store = new GameStore(await databasePath(), { busyTimeoutMs: 2_500 })
     expect(store.databaseHealth()).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       journalMode: 'wal',
       foreignKeys: true,
       busyTimeoutMs: 2_500,
     })
+    store.close()
+  })
+
+  it('persists the Profile and model versions used when a game starts', async () => {
+    const store = new GameStore(await databasePath())
+    const session = store.create(START_FEN, 'red-bottom', { multiPv: 3, depth: 16 }, {
+      profileId: 'profile-a',
+      profileVersion: 7,
+      modelVersion: 'pieces-v3',
+    })
+    expect(session.provenance).toEqual({ profileId: 'profile-a', profileVersion: 7, modelVersion: 'pieces-v3' })
     store.close()
   })
 
@@ -59,7 +70,7 @@ describe('GameStore', () => {
     first.close()
 
     const reopened = new GameStore(path)
-    expect(reopened.schemaVersion).toBe(1)
+    expect(reopened.schemaVersion).toBe(2)
     expect(reopened.getActive()).toMatchObject({
       id: session.id,
       currentFen: event.fen,

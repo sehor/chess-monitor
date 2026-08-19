@@ -4,7 +4,7 @@ import type { MoveConfirmedEvent } from '../src/domain/board-tracker'
 import type { Orientation } from '../src/domain/position'
 import type { AnalysisInfo, RealtimeSettings } from '../src/shared/ipc'
 
-const DATABASE_SCHEMA_VERSION = 1
+const DATABASE_SCHEMA_VERSION = 2
 
 type SessionStatus = 'active' | 'paused' | 'finished' | 'error'
 
@@ -18,6 +18,9 @@ interface GameRow {
   status: SessionStatus
   multi_pv: number
   analysis_depth: number
+  profile_id: string | null
+  profile_version: number | null
+  model_version: string | null
 }
 
 interface MoveRow {
@@ -32,6 +35,12 @@ interface MoveRow {
   confirmed_at: number
 }
 
+export interface GameProvenance {
+  profileId: string | null
+  profileVersion: number | null
+  modelVersion: string | null
+}
+
 export interface PersistedGameSession {
   id: string
   orientation: Orientation
@@ -41,6 +50,7 @@ export interface PersistedGameSession {
   currentVersion: number
   status: SessionStatus
   settings: RealtimeSettings
+  provenance: GameProvenance
   moves: MoveConfirmedEvent[]
 }
 
@@ -79,6 +89,17 @@ export class GameStore {
       this.database.close()
       throw new Error(`Game database schema ${currentVersion} is newer than supported schema ${DATABASE_SCHEMA_VERSION}`)
     }
+    if (currentVersion === 1) {
+      this.database.exec(`
+        BEGIN IMMEDIATE;
+        ALTER TABLE games ADD COLUMN profile_id TEXT;
+        ALTER TABLE games ADD COLUMN profile_version INTEGER;
+        ALTER TABLE games ADD COLUMN model_version TEXT;
+        PRAGMA user_version = 2;
+        COMMIT;
+      `)
+      return
+    }
     if (currentVersion !== 0) return
 
     this.database.exec(`
@@ -93,6 +114,9 @@ export class GameStore {
         status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'finished', 'error')),
         multi_pv INTEGER NOT NULL CHECK (multi_pv BETWEEN 1 AND 5),
         analysis_depth INTEGER NOT NULL CHECK (analysis_depth BETWEEN 1 AND 128),
+        profile_id TEXT,
+        profile_version INTEGER,
+        model_version TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -119,7 +143,7 @@ export class GameStore {
         PRIMARY KEY (game_id, position_version)
       );
       CREATE INDEX games_status_updated ON games(status, updated_at DESC);
-      PRAGMA user_version = 1;
+      PRAGMA user_version = 2;
       COMMIT;
     `)
   }
@@ -140,7 +164,12 @@ export class GameStore {
     }
   }
 
-  create(fen: string, orientation: Orientation, settings: RealtimeSettings): PersistedGameSession {
+  create(
+    fen: string,
+    orientation: Orientation,
+    settings: RealtimeSettings,
+    provenance: GameProvenance = { profileId: null, profileVersion: null, modelVersion: null },
+  ): PersistedGameSession {
     const id = randomUUID()
     const now = new Date().toISOString()
     this.transaction(() => {
@@ -149,9 +178,21 @@ export class GameStore {
       this.database.prepare(`
         INSERT INTO games (
           id, orientation, baseline_fen, baseline_version, current_fen, current_version,
-          status, multi_pv, analysis_depth, created_at, updated_at
-        ) VALUES (?, ?, ?, 0, ?, 0, 'active', ?, ?, ?, ?)
-      `).run(id, orientation, fen, fen, settings.multiPv, settings.depth, now, now)
+          status, multi_pv, analysis_depth, profile_id, profile_version, model_version, created_at, updated_at
+        ) VALUES (?, ?, ?, 0, ?, 0, 'active', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        orientation,
+        fen,
+        fen,
+        settings.multiPv,
+        settings.depth,
+        provenance.profileId,
+        provenance.profileVersion,
+        provenance.modelVersion,
+        now,
+        now,
+      )
     })
     return this.get(id)!
   }
@@ -286,6 +327,11 @@ export class GameStore {
       currentVersion: row.current_version,
       status: row.status,
       settings: { multiPv: row.multi_pv, depth: row.analysis_depth },
+      provenance: {
+        profileId: row.profile_id,
+        profileVersion: row.profile_version,
+        modelVersion: row.model_version,
+      },
       moves: moveRows.map((move) => ({
         type: 'move-confirmed',
         move: move.move as MoveConfirmedEvent['move'],

@@ -16,7 +16,7 @@ import type {
   RealtimeSnapshot,
   RealtimeStartInput,
 } from '../src/shared/ipc'
-import { GameStore, type PersistedGameSession } from './game-store'
+import { GameStore, type GameProvenance, type PersistedGameSession } from './game-store'
 
 const DEFAULT_SETTINGS: RealtimeSettings = { multiPv: 3, depth: 16 }
 
@@ -96,13 +96,17 @@ export class RealtimeCoordinator {
     return this.tracker?.diagnostics() ?? null
   }
 
-  start(input: RealtimeStartInput, options: Partial<TrackerOptions> = {}): RealtimeSnapshot {
+  start(
+    input: RealtimeStartInput,
+    options: Partial<TrackerOptions> = {},
+    provenance: GameProvenance = { profileId: null, profileVersion: null, modelVersion: null },
+  ): RealtimeSnapshot {
     const settings = { ...DEFAULT_SETTINGS, ...input.settings }
     this.assertSettings(settings)
     this.engine.stop()
     this.trackerOptions = options
     this.tracker = new BoardTracker(input.fen, input.orientation, options)
-    this.session = this.store.create(this.tracker.snapshot().position.fen, input.orientation, settings)
+    this.session = this.store.create(this.tracker.snapshot().position.fen, input.orientation, settings, provenance)
     this.isPaused = false
     this.storageError = null
     this.analysisState = this.emptyAnalysis(this.tracker.snapshot().position.positionVersion)
