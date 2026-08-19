@@ -20,23 +20,33 @@ const recognitionSide = ref<Side>('red')
 const recognitionCorrections = ref<Record<number, RecognitionClass>>({})
 const recognitionBusy = ref(false)
 let removeListener: (() => void) | undefined
+let suggestedSidePositionKey: string | null = null
 
 const isActive = computed(() => Boolean(snapshot.value?.gameId))
 const candidates = computed(() => {
   const state = snapshot.value?.trackerState
   return state && (state.status === 'MOVE_CANDIDATE' || state.status === 'DESYNC') ? state.candidates : []
 })
-const recognitionSideLocked = computed(() => snapshot.value?.position?.sideToMove ?? null)
 const recognitionCandidates = computed(() => recognition.value?.evaluation?.candidates ?? [])
 const lowConfidencePoints = computed(() => recognition.value?.evaluation?.lowConfidencePoints ?? [])
+
+function setSnapshot(value: RealtimeSnapshot): void {
+  snapshot.value = value
+  if (!value.position) return
+  fen.value = value.position.fen
+  const positionKey = `${value.gameId ?? 'none'}:${value.position.positionVersion}`
+  if (positionKey !== suggestedSidePositionKey) {
+    recognitionSide.value = value.position.sideToMove
+    suggestedSidePositionKey = positionKey
+  }
+}
 
 function accept(result: IpcResult<RealtimeSnapshot>, message?: string): void {
   if (!result.ok) {
     errorMessage.value = result.error.message
     return
   }
-  snapshot.value = result.value
-  if (result.value.position) fen.value = result.value.position.fen
+  setSnapshot(result.value)
   errorMessage.value = null
   statusMessage.value = message ?? null
 }
@@ -86,42 +96,56 @@ function acceptRecognition(result: IpcResult<RecognitionSnapshot>): boolean {
 
 async function scanRecognition(): Promise<void> {
   recognitionBusy.value = true
-  const result = await window.chessMonitor.recognition.scan({
-    orientation: snapshot.value?.position?.orientation ?? props.orientation,
-    sideToMove: recognitionSideLocked.value ?? recognitionSide.value,
-  })
-  if (result.ok && acceptRecognition(result)) statusMessage.value = result.value.message
-  recognitionBusy.value = false
+  try {
+    const result = await window.chessMonitor.recognition.scan({
+      orientation: snapshot.value?.position?.orientation ?? props.orientation,
+      sideToMove: recognitionSide.value,
+    })
+    if (acceptRecognition(result)) statusMessage.value = recognition.value?.message ?? null
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '完整棋盘识别失败'
+  } finally {
+    recognitionBusy.value = false
+  }
 }
 
 async function applyRecognitionCorrections(): Promise<void> {
   recognitionBusy.value = true
-  const result = await window.chessMonitor.recognition.correct(
-    lowConfidencePoints.value.map((point) => ({
-      point,
-      label: recognitionCorrections.value[point] ?? '_',
-    })),
-  )
-  if (result.ok && acceptRecognition(result)) statusMessage.value = result.value.message
-  recognitionBusy.value = false
+  try {
+    const result = await window.chessMonitor.recognition.correct(
+      lowConfidencePoints.value.map((point) => ({
+        point,
+        label: recognitionCorrections.value[point] ?? '_',
+      })),
+    )
+    if (acceptRecognition(result)) statusMessage.value = recognition.value?.message ?? null
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '识别修正失败'
+  } finally {
+    recognitionBusy.value = false
+  }
 }
 
 async function commitRecognition(candidateFen: string): Promise<void> {
   recognitionBusy.value = true
-  const result = await window.chessMonitor.recognition.commit({
-    fen: candidateFen,
-    settings: { multiPv: multiPv.value, depth: depth.value },
-  })
-  if (!result.ok) {
-    errorMessage.value = result.error.message
-  } else {
-    recognition.value = result.value.recognition
-    snapshot.value = result.value.realtime
-    if (result.value.realtime.position) fen.value = result.value.realtime.position.fen
-    errorMessage.value = null
-    statusMessage.value = result.value.recognition.message
+  try {
+    const result = await window.chessMonitor.recognition.commit({
+      fen: candidateFen,
+      settings: { multiPv: multiPv.value, depth: depth.value },
+    })
+    if (!result.ok) {
+      errorMessage.value = result.error.message
+    } else {
+      recognition.value = result.value.recognition
+      setSnapshot(result.value.realtime)
+      errorMessage.value = null
+      statusMessage.value = result.value.recognition.message
+    }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '识别局面提交失败'
+  } finally {
+    recognitionBusy.value = false
   }
-  recognitionBusy.value = false
 }
 
 async function confirmCandidate(move: string): Promise<void> {
@@ -165,18 +189,16 @@ async function exportDiagnostics(): Promise<void> {
 
 onMounted(async () => {
   removeListener = window.chessMonitor.realtime.onEvent((value) => {
-    snapshot.value = value
-    if (value.position) fen.value = value.position.fen
+    setSnapshot(value)
   })
   const recognitionResult = await window.chessMonitor.recognition.getState()
-  if (recognitionResult.ok) recognition.value = recognitionResult.value
+  acceptRecognition(recognitionResult)
 
   const result = await window.chessMonitor.realtime.getState()
   if (result.ok) {
-    snapshot.value = result.value
+    setSnapshot(result.value)
     multiPv.value = result.value.settings.multiPv
     depth.value = result.value.settings.depth
-    if (result.value.position) fen.value = result.value.position.fen
   } else errorMessage.value = result.error.message
 })
 onBeforeUnmount(() => removeListener?.())
@@ -242,8 +264,8 @@ onBeforeUnmount(() => removeListener?.())
         <template v-if="recognition?.modelVersion"> · 模型 {{ recognition.modelVersion }}</template>
       </p>
       <div class="action-row">
-        <label for="recognition-side">行棋方
-          <select id="recognition-side" v-model="recognitionSide" :disabled="Boolean(recognitionSideLocked)">
+        <label for="recognition-side">当前屏幕局面的行棋方
+          <select id="recognition-side" v-model="recognitionSide">
             <option value="red">红方</option>
             <option value="black">黑方</option>
           </select>

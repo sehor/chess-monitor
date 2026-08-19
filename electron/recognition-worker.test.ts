@@ -10,6 +10,7 @@ import {
   type RecognitionInferenceBackend,
 } from './recognition-worker'
 import { RECOGNITION_CLASSES } from '../src/domain/recognition'
+import { IPC_ERROR_CODES } from '../src/shared/ipc'
 
 async function fixtureDirectory(): Promise<string> {
   const directory = join(tmpdir(), `chess-monitor-recognition-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -130,4 +131,15 @@ describe('RecognitionWorkerManager', () => {
 
 it('RecognitionWorkerError preserves retryability', () => {
   expect(new RecognitionWorkerError('MODEL_MISSING', 'missing', false)).toMatchObject({ retryable: false })
+})
+
+it('declares a distinct IPC code for each structured recognition failure', () => {
+  expect(IPC_ERROR_CODES).toEqual(expect.arrayContaining([
+    'RECOGNITION_MODEL_ERROR',
+    'RECOGNITION_RUNTIME_ERROR',
+    'RECOGNITION_TIMEOUT',
+    'RECOGNITION_INVALID_OUTPUT',
+    'RECOGNITION_WORKER_CRASHED',
+    'RECOGNITION_INFERENCE_FAILED',
+  ]))
 })

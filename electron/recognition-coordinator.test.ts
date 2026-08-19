@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { parseFen } from '../src/domain/position'
 import { RECOGNITION_CLASSES, type RecognitionClass, type RecognitionProbabilityFrame } from '../src/domain/recognition'
 import { RecognitionCoordinator } from './recognition-coordinator'
@@ -78,6 +78,43 @@ describe('RecognitionCoordinator', () => {
     expect(accepted).toMatchObject({ fen: START_FEN, orientation: 'red-bottom', sideToMove: 'red' })
     expect(coordinator.snapshot().state).toBe('READY')
     expect(coordinator.markCommitted().state).toBe('COMMITTED')
+  })
+
+  it('clears the frame generation when a candidate is committed', async () => {
+    const backend = new FakeBackend([probabilities(), probabilities()])
+    const coordinator = new RecognitionCoordinator({ backend, timeoutMs: 200 })
+    coordinator.capture(frame(1), true)
+    coordinator.capture(frame(2), true)
+    await coordinator.scan({ orientation: 'red-bottom', sideToMove: 'red' })
+
+    expect(coordinator.markCommitted()).toMatchObject({ state: 'COMMITTED', bufferedFrameCount: 0 })
+
+    coordinator.capture(frame(3), true)
+    expect(coordinator.snapshot()).toMatchObject({ state: 'READY_FOR_SCAN', bufferedFrameCount: 1 })
+    await coordinator.dispose()
+  })
+
+  it('clears buffered frames and ignores an in-flight scan after reset', async () => {
+    let resolveInference: ((rows: number[][]) => void) | undefined
+    const output = probabilities().map((row) => row.map((value) => Math.log(value)))
+    const backend: RecognitionInferenceBackend = {
+      infer: vi.fn(() => new Promise<number[][]>((resolve) => {
+        resolveInference = resolve
+      })),
+      dispose: vi.fn(async () => undefined),
+    }
+    const coordinator = new RecognitionCoordinator({ backend, timeoutMs: 200 })
+    coordinator.capture(frame(1), true)
+
+    const scan = coordinator.scan({ orientation: 'red-bottom', sideToMove: 'red' })
+    expect(coordinator.snapshot().state).toBe('SCANNING')
+    expect(coordinator.reset()).toMatchObject({ state: 'IDLE', bufferedFrameCount: 0 })
+
+    resolveInference?.(output)
+    const staleResult = await scan
+    expect(staleResult).toMatchObject({ state: 'IDLE', bufferedFrameCount: 0, evaluation: null, error: null })
+    expect(coordinator.snapshot()).toMatchObject({ state: 'IDLE', bufferedFrameCount: 0, evaluation: null })
+    await coordinator.dispose()
   })
 
   it('requires correction when confidence is below the automatic gate', async () => {

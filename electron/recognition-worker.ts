@@ -285,6 +285,7 @@ class InlineOnnxWorkerBackend implements RecognitionInferenceBackend {
   private worker: Worker | undefined
   private sequence = 0
   private readonly pending = new Map<number, {
+    worker: Worker
     resolve: (rows: number[][]) => void
     reject: (error: Error) => void
   }>()
@@ -297,7 +298,7 @@ class InlineOnnxWorkerBackend implements RecognitionInferenceBackend {
     const id = ++this.sequence
     const pixels = new Uint8Array(frame.pixels)
     return new Promise<number[][]>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      this.pending.set(id, { worker, resolve, reject })
       worker.postMessage({
         id,
         frame: {
@@ -311,10 +312,17 @@ class InlineOnnxWorkerBackend implements RecognitionInferenceBackend {
   async dispose(): Promise<void> {
     const worker = this.worker
     this.worker = undefined
-    if (worker) await worker.terminate()
     const error = new RecognitionWorkerError('WORKER_CRASHED', 'Recognition worker was disposed', true)
-    for (const item of this.pending.values()) item.reject(error)
-    this.pending.clear()
+    const workers = new Set([...this.pending.values()].map((item) => item.worker))
+    if (worker) workers.add(worker)
+    for (const pendingWorker of workers) {
+      for (const [id, item] of this.pending) {
+        if (item.worker !== pendingWorker) continue
+        this.pending.delete(id)
+        item.reject(error)
+      }
+    }
+    await Promise.all([...workers].map((item) => item.terminate().catch(() => undefined)))
   }
 
   private ensureWorker(): Worker {
@@ -326,22 +334,22 @@ class InlineOnnxWorkerBackend implements RecognitionInferenceBackend {
         manifest: this.manifest,
       },
     })
-    worker.on('message', (message: unknown) => this.handleMessage(message))
-    worker.on('error', (error) => this.handleCrash(error))
+    worker.on('message', (message: unknown) => this.handleMessage(worker, message))
+    worker.on('error', (error) => this.handleCrash(worker, error))
     worker.on('exit', (code) => {
-      if (this.worker === worker) this.worker = undefined
-      if (code !== 0 && this.pending.size > 0) {
-        this.handleCrash(new Error(`Recognition worker exited with code ${code}`))
-      }
+      if (this.worker !== worker) return
+      this.worker = undefined
+      const hasPending = [...this.pending.values()].some((item) => item.worker === worker)
+      if (hasPending) this.rejectPendingFor(worker, new Error(`Recognition worker exited with code ${code}`))
     })
     this.worker = worker
     return worker
   }
 
-  private handleMessage(message: unknown): void {
+  private handleMessage(worker: Worker, message: unknown): void {
     if (!isRecord(message) || !Number.isInteger(message.id)) return
     const item = this.pending.get(message.id as number)
-    if (!item) return
+    if (!item || item.worker !== worker) return
     this.pending.delete(message.id as number)
     if (message.ok === true && Array.isArray(message.rows)) {
       item.resolve(message.rows as number[][])
@@ -359,11 +367,20 @@ class InlineOnnxWorkerBackend implements RecognitionInferenceBackend {
     ))
   }
 
-  private handleCrash(error: Error): void {
+  private handleCrash(worker: Worker, error: Error): void {
+    if (this.worker !== worker) return
     this.worker = undefined
+    void worker.terminate().catch(() => undefined)
+    this.rejectPendingFor(worker, error)
+  }
+
+  private rejectPendingFor(worker: Worker, error: Error): void {
     const wrapped = new RecognitionWorkerError('WORKER_CRASHED', error.message || 'Recognition worker crashed', true)
-    for (const item of this.pending.values()) item.reject(wrapped)
-    this.pending.clear()
+    for (const [id, item] of this.pending) {
+      if (item.worker !== worker) continue
+      this.pending.delete(id)
+      item.reject(wrapped)
+    }
   }
 }
 
@@ -404,6 +421,12 @@ export class RecognitionWorkerManager {
       ])
       return softmaxRows(rows)
     } catch (error) {
+      if (error instanceof RecognitionWorkerError && error.code === 'WORKER_TIMEOUT') {
+        // Termination is the cancellation boundary for an ONNX inference that no
+        // longer responds. InlineOnnxWorkerBackend clears its worker reference
+        // synchronously, so the next request creates a fresh worker.
+        void this.backend.dispose().catch(() => undefined)
+      }
       if (error instanceof RecognitionWorkerError) throw error
       throw new RecognitionWorkerError(
         'WORKER_CRASHED',

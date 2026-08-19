@@ -64,6 +64,7 @@ export class RecognitionCoordinator {
   private probabilities: RecognitionProbabilityFrame | null = null
   private scanInput: RecognitionScanInput | null = null
   private corrections: RecognitionCorrection[] = []
+  private generation = 0
 
   constructor(options: RecognitionCoordinatorOptions) {
     this.worker = new RecognitionWorkerManager(options)
@@ -101,9 +102,11 @@ export class RecognitionCoordinator {
     this.evaluation = null
     this.scanInput = { ...input }
     this.corrections = []
+    const scanGeneration = this.generation
     try {
       const frames = this.frames.slice(-2)
       const outputs = await Promise.all(frames.map((frame) => this.worker.infer(frame)))
+      if (scanGeneration !== this.generation) return this.snapshot()
       this.probabilities = fuseProbabilityFrames(outputs)
       this.evaluation = evaluateRecognition({
         probabilities: this.probabilities,
@@ -112,6 +115,7 @@ export class RecognitionCoordinator {
       })
       this.applyEvaluationState()
     } catch (error) {
+      if (scanGeneration !== this.generation) return this.snapshot()
       this.state = 'ERROR'
       this.evaluation = null
       this.probabilities = null
@@ -156,6 +160,7 @@ export class RecognitionCoordinator {
 
   markCommitted(): RecognitionSnapshot {
     if (this.state !== 'READY') throw new Error('Recognition candidate is not ready to commit')
+    this.clearBufferedRecognition()
     this.state = 'COMMITTED'
     this.message = '识别局面已原子提交，等待新的稳定图像基线'
     this.error = null
@@ -163,12 +168,8 @@ export class RecognitionCoordinator {
   }
 
   reset(): RecognitionSnapshot {
-    this.evaluation = null
-    this.probabilities = null
-    this.scanInput = null
-    this.corrections = []
-    this.error = null
-    this.state = this.frames.length > 0 ? 'READY_FOR_SCAN' : 'IDLE'
+    this.clearBufferedRecognition()
+    this.state = 'IDLE'
     this.message = this.frames.length > 0 ? '已有稳定帧，可重新识别' : '等待稳定棋盘帧'
     return this.snapshot()
   }
@@ -200,5 +201,15 @@ export class RecognitionCoordinator {
       this.state = 'REJECTED'
       this.message = this.evaluation.issues[0] ?? '识别结果未通过规则校验'
     }
+  }
+
+  private clearBufferedRecognition(): void {
+    this.generation += 1
+    this.frames = []
+    this.evaluation = null
+    this.probabilities = null
+    this.scanInput = null
+    this.corrections = []
+    this.error = null
   }
 }

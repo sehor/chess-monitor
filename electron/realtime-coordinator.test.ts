@@ -10,6 +10,7 @@ import { GameStore } from './game-store'
 import { RealtimeCoordinator, type RealtimeEngine } from './realtime-coordinator'
 
 const START_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1'
+const RESYNC_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR b - - 0 1'
 const directories: string[] = []
 
 function captureAnalysis(pointScores: number[] = Array(90).fill(0), isStable = true): CaptureAnalysis {
@@ -61,6 +62,19 @@ async function databasePath(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'chess-monitor-realtime-'))
   directories.push(directory)
   return join(directory, 'games.sqlite3')
+}
+
+function installPauseWriteFailure(path: string): DatabaseSync {
+  const database = new DatabaseSync(path)
+  database.exec(`
+    CREATE TRIGGER fail_paused_status_update
+    BEFORE UPDATE OF status ON games
+    WHEN NEW.status = 'paused'
+    BEGIN
+      SELECT RAISE(ABORT, 'simulated paused status write failure');
+    END;
+  `)
+  return database
 }
 
 afterEach(async () => {
@@ -219,6 +233,70 @@ describe('RealtimeCoordinator', () => {
     expect(store.getActive()).toMatchObject({ currentVersion: 0, status: 'error' })
     coordinator.dispose()
     store.close()
+  })
+
+  it('keeps the old position when the final paused status write fails', async () => {
+    const path = await databasePath()
+    const store = new GameStore(path)
+    const coordinator = new RealtimeCoordinator(store, new FakeEngine())
+    coordinator.start({ fen: START_FEN, orientation: 'red-bottom' })
+    coordinator.pause()
+    const triggerDatabase = installPauseWriteFailure(path)
+
+    try {
+      const snapshot = coordinator.resync(RESYNC_FEN)
+      expect(snapshot.position).toMatchObject({ fen: START_FEN, positionVersion: 0 })
+      expect(store.getActive()).toMatchObject({
+        currentFen: START_FEN,
+        currentVersion: 0,
+      })
+    } finally {
+      triggerDatabase.close()
+      coordinator.dispose()
+      store.close()
+    }
+  })
+
+  it('restores the last in-memory persisted session when rollback cannot read storage', async () => {
+    const path = await databasePath()
+    const store = new GameStore(path)
+    let now = 0
+    const coordinator = new RealtimeCoordinator(store, new FakeEngine(), () => now)
+    const mirror = new RulesAdapter(START_FEN, 'red-bottom')
+    coordinator.start({ fen: START_FEN, orientation: 'red-bottom' })
+    coordinator.observe({ capturedAt: now, sourceValid: true, profileValid: true, analysis: captureAnalysis() })
+    const move = mirror.legalMoves()[0]
+    now = 100
+    coordinator.observe({
+      capturedAt: now,
+      sourceValid: true,
+      profileValid: true,
+      analysis: captureAnalysis(scoresForMove(move, 'red-bottom'), false),
+    })
+    now = 400
+    coordinator.observe({ capturedAt: now, sourceValid: true, profileValid: true, analysis: captureAnalysis() })
+    const trusted = coordinator.getSnapshot().position
+    expect(trusted?.positionVersion).toBe(1)
+
+    const undoLatestMove = vi.spyOn(store, 'undoLatestMove').mockImplementationOnce(() => {
+      throw new Error('simulated undo write failure')
+    })
+    const getActive = vi.spyOn(store, 'getActive').mockImplementation(() => {
+      throw new Error('simulated persisted state read failure')
+    })
+
+    try {
+      expect(() => coordinator.undo()).not.toThrow()
+      expect(coordinator.getSnapshot()).toMatchObject({
+        monitoringState: 'ERROR',
+        position: trusted,
+      })
+    } finally {
+      undoLatestMove.mockRestore()
+      getActive.mockRestore()
+      coordinator.dispose()
+      store.close()
+    }
   })
 
   it('restores an unfinished paused game after close and reopen', async () => {

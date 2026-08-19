@@ -170,16 +170,24 @@ export class GameStore {
     return this.get(gameId)!
   }
 
-  replaceBaseline(gameId: string, fen: string, positionVersion: number): PersistedGameSession {
+  replaceBaseline(
+    gameId: string,
+    fen: string,
+    positionVersion: number,
+    status: SessionStatus = 'active',
+  ): PersistedGameSession {
+    let session: PersistedGameSession | undefined
     this.transaction(() => {
       this.requireWritable(gameId)
       const result = this.database.prepare(`
         UPDATE games SET baseline_fen = ?, baseline_version = ?, current_fen = ?,
-          current_version = ?, status = 'active', updated_at = ? WHERE id = ?
-      `).run(fen, positionVersion, fen, positionVersion, new Date().toISOString(), gameId)
+          current_version = ?, status = ?, updated_at = ? WHERE id = ?
+      `).run(fen, positionVersion, fen, positionVersion, status, new Date().toISOString(), gameId)
       if (result.changes !== 1) throw new Error('Game session does not exist')
+      session = this.get(gameId) ?? undefined
+      if (!session) throw new Error('Game session does not exist')
     })
-    return this.get(gameId)!
+    return session!
   }
 
   undoLatestMove(gameId: string, fen: string, positionVersion: number): PersistedGameSession {

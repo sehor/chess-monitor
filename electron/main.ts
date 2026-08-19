@@ -70,6 +70,12 @@ function configureFrameAnalyzer(profile: ReturnType<ProfileStore['getActive']>):
     highThreshold: profile.thresholds.high,
     stableFrameRequirement: profile.stableFrameRequirement,
   } : undefined)
+  recognitionCoordinator?.reset()
+}
+
+function resetFrameBaseline(): void {
+  frameAnalyzer.reset()
+  recognitionCoordinator?.reset()
 }
 
 function isAnalysisStartInput(value: unknown): value is { fen: string; positionVersion: number; multiPv: number } {
@@ -121,9 +127,26 @@ function recognitionFailure(error: unknown) {
     }
     if (error.code === 'RUNTIME_MISSING') return failure('RECOGNITION_RUNTIME_ERROR', error.message, error.retryable)
     if (error.code === 'WORKER_TIMEOUT') return failure('RECOGNITION_TIMEOUT', error.message, true)
+    if (error.code === 'INVALID_OUTPUT') return failure('RECOGNITION_INVALID_OUTPUT', error.message, error.retryable)
+    if (error.code === 'WORKER_CRASHED') return failure('RECOGNITION_WORKER_CRASHED', error.message, error.retryable)
+    if (error.code === 'INFERENCE_FAILED') return failure('RECOGNITION_INFERENCE_FAILED', error.message, error.retryable)
     return failure('RECOGNITION_FAILED', error.message, error.retryable)
   }
   return failure('RECOGNITION_FAILED', error instanceof Error ? error.message : 'Recognition failed', true)
+}
+
+function recognitionSnapshotFailure(snapshot: { message: string; error: { code: string; retryable: boolean } | null }) {
+  const code = snapshot.error?.code
+  const retryable = snapshot.error?.retryable ?? true
+  if (['MODEL_MISSING', 'MODEL_HASH_MISMATCH', 'MODEL_MANIFEST_INVALID', 'CLASS_MAPPING_MISMATCH'].includes(code ?? '')) {
+    return failure('RECOGNITION_MODEL_ERROR', snapshot.message, retryable)
+  }
+  if (code === 'RUNTIME_MISSING') return failure('RECOGNITION_RUNTIME_ERROR', snapshot.message, retryable)
+  if (code === 'WORKER_TIMEOUT') return failure('RECOGNITION_TIMEOUT', snapshot.message, true)
+  if (code === 'INVALID_OUTPUT') return failure('RECOGNITION_INVALID_OUTPUT', snapshot.message, retryable)
+  if (code === 'WORKER_CRASHED') return failure('RECOGNITION_WORKER_CRASHED', snapshot.message, retryable)
+  if (code === 'INFERENCE_FAILED') return failure('RECOGNITION_INFERENCE_FAILED', snapshot.message, retryable)
+  return failure('RECOGNITION_FAILED', snapshot.message, retryable)
 }
 
 function parseRealtimeSettings(value: unknown): RealtimeSettings | null {
@@ -284,7 +307,7 @@ async function listCaptureSources(): Promise<IpcResult<CaptureSource[]>> {
     const previousSourceId = selectedSourceId
     const namedSources = sources.map((source) => ({ ...source, kind: sourceKind(source.id) }))
     selectedSourceId = resolveSelectedSourceId(namedSources, selectedSourceId, selectedSourceName, selectedSourceKind)
-    if (selectedSourceId && selectedSourceId !== previousSourceId) frameAnalyzer.reset()
+    if (selectedSourceId !== previousSourceId) resetFrameBaseline()
 
     return success(
       sources.map((source) => ({
@@ -315,14 +338,14 @@ ipcMain.handle('capture:select-source', (_event, sourceId: unknown): IpcResult<v
   selectedSourceId = sourceId
   selectedSourceName = sourceCache.get(sourceId)?.name
   selectedSourceKind = sourceKind(sourceId)
-  frameAnalyzer.reset()
+  resetFrameBaseline()
   return success(undefined)
 })
 ipcMain.handle('capture:clear-source', (): IpcResult<void> => {
   selectedSourceId = undefined
   selectedSourceName = undefined
   selectedSourceKind = undefined
-  frameAnalyzer.reset()
+  resetFrameBaseline()
   return success(undefined)
 })
 
@@ -519,13 +542,13 @@ ipcMain.handle('recognition:scan', async (_event, value: unknown) => {
   const input = parseRecognitionScanInput(value)
   if (!input) return failure('INVALID_INPUT', 'Recognition scan input is invalid')
   const current = realtimeCoordinator?.getTrackerSnapshot()?.position
-  if (current && (current.orientation !== input.orientation || current.sideToMove !== input.sideToMove)) {
-    return failure('INVALID_INPUT', 'Recognition scan must preserve the current orientation and side to move')
+  if (current && current.orientation !== input.orientation) {
+    return failure('INVALID_INPUT', 'Recognition scan must preserve the current orientation')
   }
   try {
     const snapshot = await recognitionCoordinator.scan(input)
     return snapshot.state === 'ERROR'
-      ? failure('RECOGNITION_FAILED', snapshot.message, snapshot.error?.retryable ?? true)
+      ? recognitionSnapshotFailure(snapshot)
       : success(snapshot)
   } catch (error) {
     return recognitionFailure(error)

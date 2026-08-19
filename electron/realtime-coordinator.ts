@@ -126,18 +126,47 @@ export class RealtimeCoordinator {
 
   resync(fen: string): RealtimeSnapshot {
     const tracker = this.requireTracker()
+    const currentPosition = tracker.snapshot().position
+    const currentSession = this.requireSession()
     const wasPaused = this.isPaused
-    const events = tracker.resync(fen, this.now())
+    const candidateTracker = new BoardTracker(
+      currentPosition.fen,
+      currentPosition.orientation,
+      this.trackerOptions,
+      {
+        basePositionVersion: currentPosition.positionVersion,
+        moves: [],
+        confirmedMoveCount: currentSession.moves.length,
+      },
+    )
+    const events = candidateTracker.resync(fen, this.now())
+    const position = candidateTracker.snapshot().position
+    let session: PersistedGameSession
     try {
-      const position = tracker.snapshot().position
-      this.session = this.store.replaceBaseline(this.requireSession().id, position.fen, position.positionVersion)
-      if (wasPaused) this.session = this.store.setStatus(this.session.id, 'paused')
-      this.storageError = null
-      this.publishTrackerEvents(events)
-      this.positionChanged(!wasPaused)
+      session = this.store.replaceBaseline(
+        currentSession.id,
+        position.fen,
+        position.positionVersion,
+        wasPaused ? 'paused' : 'active',
+      )
     } catch {
-      this.rollbackAfterStorageFailure('无法持久化重同步局面，监控已暂停')
+      // The live tracker is swapped only after the single database transaction
+      // commits, so a failed resync cannot replace the last trusted position.
+      try {
+        this.session = this.store.setStatus(currentSession.id, 'error')
+      } catch {
+        // Preserve the original transaction failure; the trusted position is
+        // still the pre-resync position even if recording error status fails.
+      }
+      this.markStorageFailure('无法持久化重同步局面，监控已暂停')
+      return this.getSnapshot()
     }
+
+    this.tracker = candidateTracker
+    this.session = session
+    this.storageError = null
+    this.publishTrackerEvents(events)
+    this.positionChanged(!wasPaused)
     return this.getSnapshot()
   }
 
@@ -325,7 +354,14 @@ export class RealtimeCoordinator {
 
   private rollbackAfterStorageFailure(message: string): void {
     this.engine.stop()
-    const persisted = this.store.getActive()
+    const fallback = this.session
+    let persisted = fallback
+    try {
+      persisted = this.store.getActive() ?? fallback
+    } catch {
+      // A failed recovery read must not prevent restoration from the last
+      // in-memory snapshot known to have been persisted.
+    }
     if (persisted) {
       try {
         this.restore(persisted)
@@ -339,6 +375,11 @@ export class RealtimeCoordinator {
         // The original storage error remains the actionable failure.
       }
     }
+    this.markStorageFailure(message)
+  }
+
+  private markStorageFailure(message: string): void {
+    this.engine.stop()
     this.isPaused = true
     this.storageError = message
     this.currentAnalysisId = null
